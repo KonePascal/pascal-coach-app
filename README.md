@@ -1,56 +1,49 @@
-# Welcome to your Expo app 👋
+# Coach – Pascals Trainings-App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+iPhone-App für den täglichen Ablauf: Morgen-Check → Ampel → heutige Einheit → Kalorien/KH → Supplement-Checkliste mit Erinnerungen.
 
-## Get started
+**Stack:** Expo SDK 58 · React Native · TypeScript (strict) · Expo Router · SQLite (`expo-sqlite`) · lokale Mitteilungen (`expo-notifications`)
 
-1. Install dependencies
+## Auf dem iPhone starten
 
+1. Am Laptop [Node.js](https://nodejs.org) (LTS) installieren.
+2. Im Projektordner:
    ```bash
    npm install
-   ```
-
-2. Start the app
-
-   ```bash
    npx expo start
    ```
+3. Auf dem iPhone **Expo Go** aus dem App Store installieren und den QR-Code im Terminal mit der Kamera scannen. iPhone und Laptop müssen im selben WLAN sein (sonst `npx expo start --tunnel`).
 
-In the output, you'll find options to open the app in a
+Später als richtige App (ohne Laptop): Apple Developer Account + `npx eas-cli@latest build -p ios` → TestFlight.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Was die App macht
 
-You can start developing by editing the files inside the **src/app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+| Tab | Inhalt |
+|---|---|
+| **Heute** | HRV, Ruhepuls, Schlaf-Score/-dauer, Bevel-Erholung, Gewicht, Infekt-/Alkohol-Schalter → Ampel nach Entscheidungshierarchie, angepasste Einheit mit Watt aus FTP, kcal/KH-Ziel, fällige Supplements zum Abhaken |
+| **Verlauf** | 7-Tage-Schnitt (HRV, Ruhepuls, Schlaf, Gewicht inkl. Trend zur Vorwoche) und alle Check-ins |
+| **Einstellungen** | FTP, Gewicht, Erhalt/Defizit/Makros, Ampel-Baselines, Erinnerungen, Supplements bearbeiten |
 
-## Get a fresh project
+## Regeln (in `src/domain/`)
 
-When you're ready, run:
+- **Ampel** (`readiness.ts`): HRV-Trend → Ruhepuls → Schlaf. Zwei rote Marker → rot (Z1/frei). Ein rot oder zwei gelb → gelb (Q −1 Satz, Z2 −25 %). Infektzeichen → rot, kein Reiz. Alkohol → kein Q.
+- **Wochenvorlage** (`plan.ts`): Mo frei · Di Q-B + Oberkörper A · Mi frei · Do Z2 · Fr Z2 · Sa Q-A 30/15 ☕ + Oberkörper B · So langer Z2. Watt per `{w:<% FTP>}`.
+- **Ernährung** (`nutrition.ts`): Erhalt + Aktivitäts-kcal (Schätzung über kJ oder Garmin-Wert) − Defizit an Z2-/freien Tagen. Q-Tage und So ohne Defizit, rot ohne Defizit. Protein/Fett fix, Rest KH.
+- **Supplements** (`supplements.ts`): Regeln `täglich`, `Trainingstage`, `nur Q-A` (Koffein), `außer nach Alkohol` (Glycin), `Okt–Apr` (D3).
+
+## Entwicklung
 
 ```bash
-npm run reset-project
+npm test          # Logik-Tests (Jest)
+npm run typecheck # TypeScript
+npx expo lint
 ```
 
-This command will move the starter code to the **example** directory and create a blank **src/app** directory where you can start developing.
+**Datenbank:** Schema-Änderungen nur als neue Migration in `src/db/schema.ts` anhängen (nie alte ändern) – sonst gehen Daten auf dem Handy verloren.
 
-### Other setup steps
+## Roadmap
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- [x] v1: Morgen-Check, Ampel, Einheit, kcal/KH, Supplements + Erinnerungen
+- [ ] v2: Ernährungstracking mit Barcode-Scanner (Open Food Facts), eigene Rezepte (MCI-Ersatz)
+- [ ] v3: Gym-Log (Oberkörper A/B), Rad-Daten über Apple Health / Strava
+- [ ] v4: Wochenplan in der App bearbeiten, Cloud-Sync (Supabase), Auswertungen

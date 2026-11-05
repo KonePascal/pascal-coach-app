@@ -13,19 +13,18 @@ export default function AppTabs() {
       indicatorColor={colors.backgroundElement}
       labelStyle={{ selected: { color: colors.text } }}>
       <NativeTabs.Trigger name="index">
-        <NativeTabs.Trigger.Label>Home</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon
-          src={require('@/assets/images/tabIcons/home.png')}
-          renderingMode="template"
-        />
+        <NativeTabs.Trigger.Label>Heute</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf={{ default: 'sun.max', selected: 'sun.max.fill' }} />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="explore">
-        <NativeTabs.Trigger.Label>Explore</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon
-          src={require('@/assets/images/tabIcons/explore.png')}
-          renderingMode="template"
-        />
+      <NativeTabs.Trigger name="verlauf">
+        <NativeTabs.Trigger.Label>Verlauf</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="chart.line.uptrend.xyaxis" />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="einstellungen">
+        <NativeTabs.Trigger.Label>Einstellungen</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf={{ default: 'gearshape', selected: 'gearshape.fill' }} />
       </NativeTabs.Trigger>
     </NativeTabs>
   );
