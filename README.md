@@ -39,6 +39,11 @@ Offizielle **Garmin Connect Personal API** (`src/lib/garmin.ts`, Zuordnung in `s
 
 `src/domain/resolve.ts`: 1. eigene .zwo aus der Bibliothek (Name passt zum TP-Titel) → 2. Struktur aus TP-Titel/-Beschreibung (`parseWorkoutText`: 30/15-Sätze, N×M @ %, Z2 mit TP-Dauer und Z2-Anhang) → 3. letzte gleichartige Einheit (Protokoll `workout_log`) → 4. Wochenvorlage. Gelb = letzter Satz/Intervall gestrichen, kein Reiz = Z2-Ersatz. „ZWO teilen“ erzeugt die Datei (`toZwo`) fürs iOS-Teilen-Menü. Bibliothek: Plan-Tab → „.zwo-Dateien importieren“.
 
+## Plan-Check & zwog-Schreibweise
+
+- `src/domain/plan-check.ts` prüft Ist + Plan gegen die Masterplan-Regeln: TSB-Grenze, Ramp Rate ≤ +5 CTL/Woche, nie zwei harte Tage am Stück, ≥ 2 Tage zwischen Q-Einheiten, max. 2 harte pro Woche, langer Z2 vor Q, Wochen-TSS-Sprung ≤ 15 % (Idee: domestique-Schutzregeln, eigener Code).
+- In der TP-Beschreibung kann die Einheit ausführlich stehen (Idee: tare/zwog), z. B. `15min 45-75%` / `3x 5min @ 110%, 3min @ 55%` / `20min @ 200W` – das ergibt exakt diese .zwo.
+
 ## Profil & Zonen
 
 Leistungszonen nach Coggan aus der FTP (`src/domain/zones.ts`, identisch zu Strava/TP), HF-Zonen aus Untergrenzen Z2–Z5. Startwerte aus Strava; „Aus Garmin übernehmen“ holt Gewicht, Größe, LTHR, HFmax, HF-Zonen (Rad bevorzugt).

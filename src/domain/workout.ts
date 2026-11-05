@@ -106,6 +106,10 @@ const COOLDOWN: Step = { kind: 'cooldown', sec: 10 * 60, from: 0.65, to: 0.45 };
  * `durationMin` (aus TP) füllt Z2-Einheiten bzw. einen Z2-Anhang auf.
  */
 export function parseWorkoutText(title: string, description = '', durationMin?: number | null, ftp = 289): Workout | null {
+  // Ausführlich notierte Struktur (zwog-Schreibweise) in der Beschreibung hat Vorrang
+  const block = parseBlockText(description, ftp);
+  if (block) return { name: title.trim() || 'Workout', description, steps: block, origin: 'text' };
+
   const t = `${title}\n${description}`.replace(/,/g, '.');
   const lower = t.toLowerCase();
   const steps: Step[] = [];
@@ -159,6 +163,75 @@ export function parseWorkoutText(title: string, description = '', durationMin?: 
   }
   void ftp;
   return null;
+}
+
+// ---------- zwog-Schreibweise (Zeile für Zeile) ----------
+
+const DUR = String.raw`(\d+(?:[.,]\d+)?)\s*(min|m|s|sek|sec|h)\b`;
+const PWR = String.raw`(\d{2,4})\s*(%|w)(?:\s*ftp)?`;
+
+function toSec(n: string, unit: string): number {
+  const v = Number(n.replace(',', '.'));
+  const u = unit.toLowerCase();
+  return Math.round(u === 'h' ? v * 3600 : u.startsWith('s') ? v : v * 60);
+}
+
+function toFrac(n: string, unit: string, ftp: number): number {
+  const v = Number(n);
+  return unit.toLowerCase() === 'w' ? v / ftp : v / 100;
+}
+
+/**
+ * Eine Zeile pro Abschnitt, z. B.:
+ *   10min von 50 bis 75%        (auch „10min from 50 to 75%“, „Warmup 10min 50-75%“)
+ *   3x 5min @ 110%, 3min @ 55%  (Intervalle mit Pause)
+ *   3x (30s @ 150% / 30s @ 50%)
+ *   20min @ 200W                (Watt statt %)
+ *   5min @ 55%
+ * Mindestens zwei erkannte Zeilen, sonst `null` (dann greift die Kurzform-Erkennung).
+ */
+export function parseBlockText(text: string, ftp: number): Step[] | null {
+  if (!text) return null;
+  const steps: Step[] = [];
+  for (const raw of text.split(/\n|;/)) {
+    const line = raw.trim().toLowerCase().replace(/×/g, 'x').replace(/^[-•*]\s*/, '');
+    if (!line) continue;
+
+    const iv = new RegExp(String.raw`^(\d{1,2})\s*x\s*\(?\s*${DUR}\s*(?:@|at|bei)\s*${PWR}\s*(?:[,/+]|und|then)\s*${DUR}\s*(?:@|at|bei)\s*${PWR}`).exec(line);
+    if (iv) {
+      steps.push({
+        kind: 'intervals',
+        repeat: Number(iv[1]),
+        onSec: toSec(iv[2], iv[3]),
+        on: toFrac(iv[4], iv[5], ftp),
+        offSec: toSec(iv[6], iv[7]),
+        off: toFrac(iv[8], iv[9], ftp),
+      });
+      continue;
+    }
+    const ivNoRest = new RegExp(String.raw`^(\d{1,2})\s*x\s*${DUR}\s*(?:@|at|bei)\s*${PWR}`).exec(line);
+    if (ivNoRest) {
+      const on = toFrac(ivNoRest[4], ivNoRest[5], ftp);
+      const onSec = toSec(ivNoRest[2], ivNoRest[3]);
+      steps.push({ kind: 'intervals', repeat: Number(ivNoRest[1]), onSec, on, offSec: defaultRest(onSec / 60, on) * 60, off: 0.55 });
+      continue;
+    }
+    const ramp = new RegExp(String.raw`${DUR}\s*(?:from|von|ramp|rampe)?\s*(\d{2,3})\s*(?:%|w)?\s*(?:to|bis|-|–|→)\s*(\d{2,3})\s*(%|w)`).exec(line);
+    if (ramp) {
+      const sec = toSec(ramp[1], ramp[2]);
+      const from = toFrac(ramp[3], ramp[5], ftp);
+      const to = toFrac(ramp[4], ramp[5], ftp);
+      const kind = /warm|einfahr/.test(line) || (!steps.length && to > from) ? 'warmup' : /cool|ausfahr/.test(line) || to < from ? 'cooldown' : 'ramp';
+      steps.push({ kind, sec, from, to });
+      continue;
+    }
+    const steady = new RegExp(String.raw`${DUR}\s*(?:@|at|bei)\s*${PWR}`).exec(line);
+    if (steady) {
+      steps.push({ kind: 'steady', sec: toSec(steady[1], steady[2]), power: toFrac(steady[3], steady[4], ftp) });
+      continue;
+    }
+  }
+  return steps.length >= 2 ? steps : null;
 }
 
 function parseHm(t: string): number | null {

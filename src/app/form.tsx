@@ -12,7 +12,8 @@ import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { setOverride } from '@/db/repo';
 import { fromIso, labelDate } from '@/domain/dates';
 import { plannedFor } from '@/domain/load';
-import { formLabel, formWarnings } from '@/domain/pmc';
+import { checkPlan, rampRate } from '@/domain/plan-check';
+import { formLabel } from '@/domain/pmc';
 import { usePmc, type PmcRow } from '@/hooks/use-pmc';
 import { useTheme } from '@/hooks/use-theme';
 import { syncLoad } from '@/lib/sync';
@@ -82,7 +83,8 @@ export default function FormScreen() {
   const todayRow = rows.find((r) => r.date === today) ?? rows[rows.length - 1];
   const future = rows.filter((r) => r.date >= today);
   const past = rows.filter((r) => r.date < today).slice(-7).reverse();
-  const warnings = formWarnings(rows, settings.tsbLimit);
+  const findings = checkPlan(rows, { today, tsbLimit: settings.tsbLimit });
+  const ramp = rampRate(rows, today);
   const nextQ = future.find((r) => r.date > today && r.tp.some((e) => e.dayType === 'qa' || e.dayType === 'qb'));
   const weekTss = future.slice(0, 7).reduce((s, r) => s + r.tss, 0);
   const end = rows[rows.length - 1];
@@ -196,15 +198,28 @@ export default function FormScreen() {
                 {nextQ.tsb >= -10 ? '→ gute Ausgangslage' : nextQ.tsb >= -20 ? '→ ok, Beine evtl. schwer' : '→ müde, Vortag entlasten?'}
               </ThemedText>
             ) : null}
-            {warnings.length ? (
-              <ThemedText type="small" style={{ color: warnings.some((w) => w.level === 'limit') ? LIGHT_COLOR.red : LIGHT_COLOR.yellow }}>
-                ⚠️ TSB {warnings.some((w) => w.level === 'limit') ? `unter ${settings.tsbLimit}` : 'nahe der Grenze'} am{' '}
-                {warnings.map((w) => labelDate(fromIso(w.date))).join(', ')} – Volumen davor kürzen.
+            {ramp !== null ? (
+              <ThemedText type="small">
+                Ramp Rate: {ramp >= 0 ? '+' : ''}
+                {ramp.toFixed(1)} CTL in 7 Tagen (Ziel ≤ +5)
+              </ThemedText>
+            ) : null}
+          </Card>
+
+          <Card title="Plan-Check (Masterplan-Regeln)">
+            {findings.length === 0 ? (
+              <ThemedText type="small" style={{ color: LIGHT_COLOR.green }}>
+                ✓ Alles im Rahmen: TSB über {settings.tsbLimit}, CTL ≤ +5/Woche, keine zwei harten Tage am Stück, max. 2 Q pro Woche.
               </ThemedText>
             ) : (
-              <ThemedText type="small" style={{ color: LIGHT_COLOR.green }}>
-                ✓ Plan bleibt über der Grenze {settings.tsbLimit}.
-              </ThemedText>
+              findings.map((f, i) => (
+                <ThemedText
+                  key={`${f.rule}-${f.date}-${i}`}
+                  type="small"
+                  style={{ color: f.level === 'limit' ? LIGHT_COLOR.red : f.level === 'warn' ? LIGHT_COLOR.yellow : undefined }}>
+                  {f.level === 'limit' ? '⛔' : f.level === 'warn' ? '⚠️' : 'ℹ️'} {f.text}
+                </ThemedText>
+              ))
             )}
           </Card>
 

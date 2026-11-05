@@ -115,3 +115,33 @@ describe('Zonen', () => {
     expect(zoneFor(150, z)?.name).toBe('Z2 Grundlage');
   });
 });
+
+import { parseBlockText } from '../workout';
+
+describe('zwog-Schreibweise in der TP-Beschreibung', () => {
+  test('ganze Einheit Zeile für Zeile', () => {
+    const steps = parseBlockText(
+      ['Warmup 15min von 45 bis 75%', '3x 5min @ 110%, 3min @ 55%', '10min @ 200W', '- 2 × 20s @ 150% / 40s @ 50%', '10min 65-45%'].join('\n'),
+      289,
+    )!;
+    expect(steps.map((s) => s.kind)).toEqual(['warmup', 'intervals', 'steady', 'intervals', 'cooldown']);
+    expect(steps[1]).toMatchObject({ repeat: 3, onSec: 300, on: 1.1, offSec: 180, off: 0.55 });
+    expect(steps[2]).toMatchObject({ sec: 600 });
+    expect((steps[2] as { power: number }).power).toBeCloseTo(200 / 289, 3);
+    expect(steps[3]).toMatchObject({ repeat: 2, onSec: 20, on: 1.5, offSec: 40, off: 0.5 });
+  });
+
+  test('ohne Pause → Standardpause nach Protokoll', () => {
+    expect(parseBlockText('10min @ 60%\n5x 10min @ 90% FTP', 289)![1]).toMatchObject({ repeat: 5, offSec: 120 });
+  });
+
+  test('Fließtext ohne Struktur → null (Kurzform-Erkennung greift)', () => {
+    expect(parseBlockText('Resistance-Modus, 85–95 rpm, locker bleiben', 289)).toBeNull();
+    expect(parseWorkoutText('Q-A 30/15 · 5 Sets @ 122 %', 'Resistance-Modus 85–95 rpm')!.steps.filter((s) => s.kind === 'intervals')).toHaveLength(5);
+  });
+
+  test('Beschreibung mit Struktur schlägt Titel', () => {
+    const w = parseWorkoutText('Freitag Spezial', '15min 45-75%\n4x 8min @ 106%, 4min @ 55%\n10min 65-45%')!;
+    expect(w.steps[1]).toMatchObject({ repeat: 4, onSec: 480, on: 1.06 });
+  });
+});

@@ -4,7 +4,9 @@ import { useCallback, useState } from 'react';
 import { loadActivities, loadOverrides, loadPlan, loadSettings, loadTpEvents } from '@/db/repo';
 import { isoDate } from '@/domain/dates';
 import { dayLoad, groupBy, type LoadContext, type LoadSource } from '@/domain/load';
-import { WEEK_TEMPLATE } from '@/domain/plan';
+import { WEEK_TEMPLATE, plannedFor as templateDay } from '@/domain/plan';
+import { fromIso } from '@/domain/dates';
+import type { DayType } from '@/domain/types';
 import { addDays, pmcSeries, type PmcPoint } from '@/domain/pmc';
 import type { TpEvent } from '@/domain/trainingpeaks';
 import { DEFAULT_SETTINGS, type Settings } from '@/domain/types';
@@ -14,6 +16,7 @@ export const HORIZON_DAYS = 14;
 export interface PmcRow extends PmcPoint {
   source: LoadSource;
   tp: TpEvent[];
+  dayType: DayType;
 }
 
 export interface PmcModel {
@@ -49,7 +52,13 @@ export function usePmc() {
       gymTss: settings.gymTss,
     };
     const series = pmcSeries(settings.pmcSeed, to, (d) => dayLoad(d, ctx));
-    const rows: PmcRow[] = series.map((p) => ({ ...p, source: dayLoad(p.date, ctx).source, tp: ctx.tp.get(p.date) ?? [] }));
+    const rank: Record<DayType, number> = { qa: 4, qb: 3, long: 2, z2: 1, rest: 0 };
+    const rows: PmcRow[] = series.map((p) => {
+      const tpDay = ctx.tp.get(p.date) ?? [];
+      const bike = tpDay.filter((e) => e.kind === 'bike').sort((a, b) => rank[b.dayType] - rank[a.dayType]);
+      const dayType: DayType = bike[0]?.dayType ?? (p.tss > 0 ? templateDay(fromIso(p.date), plan).dayType : 'rest');
+      return { ...p, source: dayLoad(p.date, ctx).source, tp: tpDay, dayType };
+    });
     const m = { settings, ctx, rows, today };
     setModel(m);
     return m;
