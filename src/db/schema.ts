@@ -71,6 +71,17 @@ const MIGRATIONS: ((db: SQLiteDatabase) => Promise<void>)[] = [
       await db.runAsync('INSERT OR IGNORE INTO plan_days (weekday, data) VALUES (?, ?)', Number(day), JSON.stringify(p));
     }
   },
+  // v3 – Garmin-Sync: Herkunft und Zusatzwerte am Check-in
+  async (db) => {
+    await db.execAsync(`
+      ALTER TABLE checkins ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';  -- 'manual' | 'garmin'
+      ALTER TABLE checkins ADD COLUMN body_battery REAL;
+      ALTER TABLE checkins ADD COLUMN hrv_status TEXT;
+      ALTER TABLE checkins ADD COLUMN hrv_baseline_low REAL;
+      ALTER TABLE checkins ADD COLUMN garmin_kcal REAL;                        -- Trainings-kcal laut Garmin-Aktivitäten
+      ALTER TABLE checkins ADD COLUMN synced_at TEXT;
+    `);
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

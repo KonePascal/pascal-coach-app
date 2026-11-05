@@ -1,7 +1,7 @@
 import { useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useCallback, useMemo, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -25,17 +25,37 @@ import {
   listSupplements,
   loadPlan,
   loadSettings,
+  saveGarminRaw,
   takenOn,
   toggleTaken,
   upsertCheckin,
   type StoredCheckIn,
 } from '@/db/repo';
 import { isoDate, labelDate } from '@/domain/dates';
+import type { GarminActivity } from '@/domain/garmin-parse';
 import { nutritionFor } from '@/domain/nutrition';
 import { DAY_TYPE_LABEL, WEEK_TEMPLATE, sessionFor, upcoming, type WeekPlan } from '@/domain/plan';
 import { evaluate, fmtHours } from '@/domain/readiness';
 import { isDue, type Supplement } from '@/domain/supplements';
-import { DEFAULT_SETTINGS, type CheckIn, type Settings } from '@/domain/types';
+import { DEFAULT_SETTINGS, type Baselines, type CheckIn, type Settings } from '@/domain/types';
+import { getApiKey, syncDay } from '@/lib/garmin';
+
+const HRV_STATUS: Record<string, string> = {
+  BALANCED: 'ausgeglichen',
+  UNBALANCED: 'unausgeglichen',
+  LOW: 'niedrig',
+  POOR: 'schlecht',
+};
+const RESYNC_MS = 20 * 60 * 1000;
+
+interface GarminState {
+  status: 'nokey' | 'idle' | 'syncing' | 'ok' | 'error';
+  message?: string;
+  activities: GarminActivity[];
+}
+
+const hhmm = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
 
 interface Form {
   hrv: string;
@@ -86,6 +106,8 @@ export default function TodayScreen() {
   const [taken, setTaken] = useState<Set<number>>(new Set());
   const [form, setForm] = useState<Form>(emptyForm);
   const [editing, setEditing] = useState(true);
+  const [garmin, setGarmin] = useState<GarminState>({ status: 'idle', activities: [] });
+  const syncing = useRef(false);
 
   const load = useCallback(async () => {
     const [s, p, c, h, sp, t] = await Promise.all([
@@ -106,12 +128,82 @@ export default function TodayScreen() {
       setForm(formFrom(c));
       setEditing(false);
     }
+    return { s, c, h };
   }, [db, date]);
+
+  /** Garmin holen und als Check-in speichern. Manuelle Angaben (Infekt, Alkohol, Gewicht …) bleiben erhalten. */
+  const runSync = useCallback(
+    async (force = false) => {
+      if (syncing.current) return;
+      const key = await getApiKey();
+      if (!key) {
+        setGarmin({ status: 'nokey', activities: [] });
+        return;
+      }
+      const { s, c, h } = await load();
+      const fresh = c?.syncedAt && Date.now() - new Date(c.syncedAt).getTime() < RESYNC_MS;
+      if (!force && (c?.source === 'manual' || fresh)) {
+        setGarmin((g) => ({ ...g, status: c?.syncedAt ? 'ok' : 'idle' }));
+        return;
+      }
+      syncing.current = true;
+      setGarmin((g) => ({ ...g, status: 'syncing' }));
+      try {
+        const r = await syncDay(today);
+        const m = r.morning;
+        const merged: CheckIn = {
+          date,
+          hrv: m.hrv ?? c?.hrv ?? null,
+          rhr: m.rhr ?? c?.rhr ?? null,
+          sleepScore: m.sleepScore ?? c?.sleepScore ?? null,
+          sleepHours: m.sleepHours ?? c?.sleepHours ?? null,
+          recovery: c?.recovery ?? null,
+          weight: c?.weight ?? null,
+          symptoms: c?.symptoms ?? false,
+          alcohol: c?.alcohol ?? false,
+          note: c?.note ?? null,
+        };
+        const baseline: Baselines = { ...s.baselines, hrvLow: m.hrvBaselineLow ?? s.baselines.hrvLow };
+        const light = evaluate(merged, h, baseline).light;
+        await upsertCheckin(
+          db,
+          {
+            ...merged,
+            activityKcal: c?.activityKcal ?? null,
+            source: 'garmin',
+            bodyBattery: m.bodyBattery,
+            hrvStatus: m.hrvStatus,
+            hrvBaselineLow: m.hrvBaselineLow,
+            garminKcal: r.trainingKcal,
+            syncedAt: r.syncedAt,
+          },
+          light,
+        );
+        await saveGarminRaw(db, r.raw);
+        await load();
+        const noData = m.hrv === null && m.rhr === null && m.sleepScore === null;
+        setGarmin({
+          status: r.errors.length && noData ? 'error' : 'ok',
+          message: noData
+            ? 'Noch keine Nachtwerte – Uhr mit der Garmin-App synchronisieren und neu laden.'
+            : r.errors.length
+              ? `Teilweise geladen (${r.errors.length} Fehler)`
+              : undefined,
+          activities: r.activities,
+        });
+      } catch (e) {
+        setGarmin((g) => ({ ...g, status: 'error', message: e instanceof Error ? e.message : String(e) }));
+      } finally {
+        syncing.current = false;
+      }
+    },
+    [db, date, load, today],
+  );
 
   useFocusEffect(
     useCallback(() => {
-      void load();
-    }, [load]),
+      void runSync();
+    }, [runSync]),
   );
 
   const checkin: CheckIn = useMemo(
@@ -129,14 +221,36 @@ export default function TodayScreen() {
     [date, form],
   );
 
-  const readiness = evaluate(checkin, history, settings.baselines);
+  const baselines: Baselines = { ...settings.baselines, hrvLow: stored?.hrvBaselineLow ?? settings.baselines.hrvLow };
+  const readiness = evaluate(checkin, history, baselines);
   const session = sessionFor(today, readiness, settings.ftp, plan);
   const next = upcoming(today, 2, plan, settings.ftp);
-  const food = nutritionFor(session, readiness, settings, parseNum(form.activityKcal));
+  const food = nutritionFor(session, readiness, settings, parseNum(form.activityKcal) ?? stored?.garminKcal);
   const dueSupps = supps.filter((s) => isDue(s, today, session, checkin));
 
   const save = async () => {
-    await upsertCheckin(db, { ...checkin, activityKcal: parseNum(form.activityKcal) }, readiness.light);
+    // Werden Garmin-Werte von Hand geändert, gilt der Tag als manuell (kein automatisches Überschreiben mehr).
+    const changed =
+      stored?.source === 'garmin' &&
+      (checkin.hrv !== stored.hrv ||
+        checkin.rhr !== stored.rhr ||
+        checkin.sleepScore !== stored.sleepScore ||
+        (checkin.sleepHours !== null && stored.sleepHours !== null &&
+          Math.abs((checkin.sleepHours ?? 0) - (stored.sleepHours ?? 0)) > 0.02));
+    await upsertCheckin(
+      db,
+      {
+        ...checkin,
+        activityKcal: parseNum(form.activityKcal),
+        source: stored?.source === 'garmin' && !changed ? 'garmin' : 'manual',
+        bodyBattery: stored?.bodyBattery ?? null,
+        hrvStatus: stored?.hrvStatus ?? null,
+        hrvBaselineLow: stored?.hrvBaselineLow ?? null,
+        garminKcal: stored?.garminKcal ?? null,
+        syncedAt: stored?.syncedAt ?? null,
+      },
+      readiness.light,
+    );
     await load();
     setEditing(false);
   };
@@ -165,6 +279,47 @@ export default function TodayScreen() {
               </ThemedText>
               <ThemedText type="subtitle">Heute</ThemedText>
             </View>
+
+            {garmin.status === 'nokey' ? (
+              <ThemedText type="small" themeColor="textSecondary">
+                ⌚ Tipp: In den Einstellungen Garmin verbinden – dann füllt sich der Morgen-Check von selbst.
+              </ThemedText>
+            ) : (
+              <Card>
+                <View style={styles.garminRow}>
+                  <ThemedText type="smallBold">
+                    ⌚ Garmin{' '}
+                    {garmin.status === 'syncing'
+                      ? '· lädt …'
+                      : stored?.syncedAt
+                        ? `· ${hhmm(stored.syncedAt)}`
+                        : ''}
+                    {stored?.source === 'manual' ? ' · manuell' : ''}
+                  </ThemedText>
+                  <Pressable onPress={() => void runSync(true)} disabled={garmin.status === 'syncing'}>
+                    <ThemedText type="smallBold" style={{ color: '#3c87f7' }}>
+                      {stored?.source === 'manual' ? 'Von Garmin holen' : 'Neu laden'}
+                    </ThemedText>
+                  </Pressable>
+                </View>
+                {stored?.source === 'garmin' ? (
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {[
+                      stored.bodyBattery != null && `Body Battery ${stored.bodyBattery}`,
+                      stored.hrvStatus && `HRV-Status ${HRV_STATUS[stored.hrvStatus] ?? stored.hrvStatus}`,
+                      stored.hrvBaselineLow != null && `HRV-Band ab ${stored.hrvBaselineLow} ms`,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </ThemedText>
+                ) : null}
+                {garmin.message ? (
+                  <ThemedText type="small" style={{ color: garmin.status === 'error' ? '#E5484D' : undefined }}>
+                    {garmin.message}
+                  </ThemedText>
+                ) : null}
+              </Card>
+            )}
 
             {editing ? (
               <Card title="Morgen-Check">
@@ -213,6 +368,29 @@ export default function TodayScreen() {
               ) : null}
             </Card>
 
+            {garmin.activities.length ? (
+              <Card title="Heute absolviert (Garmin)">
+                {garmin.activities.map((a) => (
+                  <View key={a.id || a.start} style={{ gap: 2, paddingVertical: 2 }}>
+                    <ThemedText type="smallBold">
+                      {a.start.slice(11, 16)} {a.name}
+                    </ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {[
+                        fmtHours(a.durationMin / 60),
+                        a.normPower != null && `NP ${Math.round(a.normPower)} W`,
+                        a.normPower == null && a.avgPower != null && `Ø ${Math.round(a.avgPower)} W`,
+                        a.tss != null && `${Math.round(a.tss)} TSS`,
+                        a.calories != null && `${Math.round(a.calories)} kcal`,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </ThemedText>
+                  </View>
+                ))}
+              </Card>
+            ) : null}
+
             <Card title="Essen heute">
               <View style={styles.kcalRow}>
                 <ThemedText type="subtitle">{food.kcal.toLocaleString('de-DE')}</ThemedText>
@@ -228,7 +406,11 @@ export default function TodayScreen() {
                 value={`${settings.maintenanceKcal} + ${food.activityKcal} Aktivität${food.deficit ? ` − ${food.deficit}` : ''}`}
               />
               <NumberField
-                label="Aktivitäts-kcal laut Garmin (optional, überschreibt Schätzung)"
+                label={
+                  stored?.garminKcal != null
+                    ? `Trainings-kcal (Garmin: ${stored.garminKcal}) – nur eintragen zum Überschreiben`
+                    : 'Trainings-kcal (optional, überschreibt die Schätzung)'
+                }
                 unit="kcal"
                 value={form.activityKcal}
                 onChange={(v) => {
@@ -296,5 +478,6 @@ const styles = StyleSheet.create({
   header: { gap: Spacing.half, marginBottom: Spacing.one },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
   big: { fontSize: 17, lineHeight: 24 },
+  garminRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   kcalRow: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.two },
 });

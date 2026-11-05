@@ -1,7 +1,18 @@
 import { useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  Share,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -11,6 +22,7 @@ import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import {
   deleteSupplement,
   exportAll,
+  loadGarminRaw,
   listSupplements,
   loadPlan,
   loadSettings,
@@ -20,7 +32,9 @@ import {
 import { parseTime } from '@/domain/dates';
 import { RULE_LABEL, type Supplement, type SupplementRule } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type Settings } from '@/domain/types';
+import { getApiKey, setApiKey, testConnection } from '@/lib/garmin';
 import { ensurePermission, rescheduleAll } from '@/lib/notifications';
+import { useTheme } from '@/hooks/use-theme';
 
 type Draft = Omit<Supplement, 'id'> & { id?: number; key: string };
 const RULES = Object.keys(RULE_LABEL) as SupplementRule[];
@@ -31,6 +45,11 @@ export default function SettingsScreen() {
   const [num, setNum] = useState<Record<string, string>>({});
   const [supps, setSupps] = useState<Draft[]>([]);
   const [removed, setRemoved] = useState<number[]>([]);
+  const theme = useTheme();
+  const [hasKey, setHasKey] = useState(false);
+  const [keyInput, setKeyInput] = useState('');
+  const [garminBusy, setGarminBusy] = useState(false);
+  const [garminInfo, setGarminInfo] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [st, sp] = await Promise.all([loadSettings(db), listSupplements(db)]);
@@ -49,6 +68,7 @@ export default function SettingsScreen() {
       sleepHoursTarget: String(st.baselines.sleepHoursTarget),
     });
     setSupps(sp.map((x) => ({ ...x, key: String(x.id) })));
+    setHasKey(!!(await getApiKey()));
     setRemoved([]);
   }, [db]);
 
@@ -65,6 +85,60 @@ export default function SettingsScreen() {
 
   const updSupp = (key: string, patch: Partial<Draft>) =>
     setSupps((list) => list.map((x) => (x.key === key ? { ...x, ...patch } : x)));
+
+  const connectGarmin = async () => {
+    const key = keyInput.trim();
+    if (!key && !hasKey) {
+      Alert.alert('Schlüssel fehlt', 'Füge deinen Garmin Personal API Key ein.');
+      return;
+    }
+    setGarminBusy(true);
+    setGarminInfo(null);
+    try {
+      if (key) await setApiKey(key);
+      const r = await testConnection();
+      const m = r.morning;
+      setHasKey(true);
+      setKeyInput('');
+      setGarminInfo(
+        [
+          '✅ Verbunden.',
+          `HRV ${m.hrv ?? '–'} ms · Ruhepuls ${m.rhr ?? '–'} · Schlaf ${m.sleepScore ?? '–'} / ${m.sleepHours ?? '–'} h · Body Battery ${m.bodyBattery ?? '–'}`,
+          `${r.activities.length} Aktivität(en) heute`,
+          r.errors.length ? `Hinweise: ${r.errors.join(' | ')}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
+    } catch (e) {
+      setGarminInfo(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setGarminBusy(false);
+    }
+  };
+
+  const disconnectGarmin = () =>
+    Alert.alert('Garmin trennen?', 'Der Schlüssel wird vom iPhone gelöscht.', [
+      { text: 'Abbrechen', style: 'cancel' },
+      {
+        text: 'Trennen',
+        style: 'destructive',
+        onPress: () =>
+          void setApiKey(null).then(() => {
+            setHasKey(false);
+            setGarminInfo(null);
+          }),
+      },
+    ]);
+
+  const showRaw = async () => {
+    const raw = await loadGarminRaw(db);
+    if (!raw) {
+      Alert.alert('Noch keine Daten', 'Erst einmal synchronisieren.');
+      return;
+    }
+    await Share.share({ message: raw, title: 'Garmin-Rohdaten' });
+  };
 
   const save = async () => {
     const bad = supps.find((x) => !parseTime(x.time) || !x.name.trim());
@@ -108,6 +182,42 @@ export default function SettingsScreen() {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
             <ThemedText type="subtitle">Einstellungen</ThemedText>
+
+            <Card title="Garmin">
+              <ThemedText type="small" themeColor="textSecondary">
+                {hasKey
+                  ? 'Verbunden. HRV, Ruhepuls, Schlaf, Body Battery und Aktivitäten werden beim Öffnen von „Heute“ automatisch geholt.'
+                  : 'Schlüssel erstellen: am Laptop connect.garmin.com/app/settings/personalApiToken öffnen → „Create Key“ → Bedingungen akzeptieren → Ablauf 1 Jahr → kopieren (wird nur einmal angezeigt) → hier einfügen.'}
+              </ThemedText>
+              <TextInput
+                value={keyInput}
+                onChangeText={setKeyInput}
+                placeholder={hasKey ? 'Neuen Schlüssel einfügen (optional)' : 'Personal API Key einfügen'}
+                placeholderTextColor={theme.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                style={[styles.keyInput, { color: theme.text, backgroundColor: theme.background }]}
+              />
+              {garminBusy ? <ActivityIndicator /> : null}
+              {garminInfo ? <ThemedText type="small">{garminInfo}</ThemedText> : null}
+              <Button title={hasKey ? 'Verbindung testen' : 'Verbinden'} onPress={() => void connectGarmin()} />
+              {hasKey ? (
+                <View style={styles.suppFoot}>
+                  <Pressable onPress={() => void showRaw()}>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Rohdaten teilen (Fehlersuche)
+                    </ThemedText>
+                  </Pressable>
+                  <View style={{ flex: 1 }} />
+                  <Pressable onPress={disconnectGarmin}>
+                    <ThemedText type="small" style={{ color: '#E5484D' }}>
+                      Trennen
+                    </ThemedText>
+                  </Pressable>
+                </View>
+              ) : null}
+            </Card>
 
             <Card title="Athlet">
               <View style={styles.grid}>
@@ -225,5 +335,6 @@ const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
   supp: { gap: Spacing.two, paddingBottom: Spacing.three, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: '#8884' },
   suppFoot: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+  keyInput: { borderRadius: 10, paddingHorizontal: Spacing.three, paddingVertical: 12, fontSize: 16 },
   rule: { paddingVertical: 12, paddingHorizontal: Spacing.three, borderRadius: 10, backgroundColor: '#8882' },
 });

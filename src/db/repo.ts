@@ -17,9 +17,24 @@ interface CheckinRow {
   activity_kcal: number | null;
   light: Light | null;
   note: string | null;
+  source: 'manual' | 'garmin';
+  body_battery: number | null;
+  hrv_status: string | null;
+  hrv_baseline_low: number | null;
+  garmin_kcal: number | null;
+  synced_at: string | null;
 }
 
-export interface StoredCheckIn extends CheckIn {
+export interface GarminExtras {
+  source: 'manual' | 'garmin';
+  bodyBattery: number | null;
+  hrvStatus: string | null;
+  hrvBaselineLow: number | null;
+  garminKcal: number | null;
+  syncedAt: string | null;
+}
+
+export interface StoredCheckIn extends CheckIn, GarminExtras {
   activityKcal: number | null;
   light: Light | null;
 }
@@ -37,6 +52,12 @@ const toCheckIn = (r: CheckinRow): StoredCheckIn => ({
   activityKcal: r.activity_kcal,
   light: r.light,
   note: r.note,
+  source: r.source ?? 'manual',
+  bodyBattery: r.body_battery,
+  hrvStatus: r.hrv_status,
+  hrvBaselineLow: r.hrv_baseline_low,
+  garminKcal: r.garmin_kcal,
+  syncedAt: r.synced_at,
 });
 
 // ---------- Settings ----------
@@ -83,17 +104,20 @@ export async function getRecent(db: SQLiteDatabase, limit = 30): Promise<StoredC
 
 export async function upsertCheckin(
   db: SQLiteDatabase,
-  c: CheckIn & { activityKcal?: number | null },
+  c: CheckIn & { activityKcal?: number | null } & Partial<GarminExtras>,
   light: Light,
 ): Promise<void> {
   await db.runAsync(
-    `INSERT INTO checkins (date, hrv, rhr, sleep_score, sleep_hours, recovery, weight, symptoms, alcohol, activity_kcal, light, note, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `INSERT INTO checkins (date, hrv, rhr, sleep_score, sleep_hours, recovery, weight, symptoms, alcohol, activity_kcal, light, note,
+                           source, body_battery, hrv_status, hrv_baseline_low, garmin_kcal, synced_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(date) DO UPDATE SET
        hrv = excluded.hrv, rhr = excluded.rhr, sleep_score = excluded.sleep_score,
        sleep_hours = excluded.sleep_hours, recovery = excluded.recovery, weight = excluded.weight,
        symptoms = excluded.symptoms, alcohol = excluded.alcohol, activity_kcal = excluded.activity_kcal,
-       light = excluded.light, note = excluded.note, updated_at = excluded.updated_at`,
+       light = excluded.light, note = excluded.note, source = excluded.source, body_battery = excluded.body_battery,
+       hrv_status = excluded.hrv_status, hrv_baseline_low = excluded.hrv_baseline_low,
+       garmin_kcal = excluded.garmin_kcal, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
     c.date,
     c.hrv ?? null,
     c.rhr ?? null,
@@ -106,7 +130,26 @@ export async function upsertCheckin(
     c.activityKcal ?? null,
     light,
     c.note ?? null,
+    c.source ?? 'manual',
+    c.bodyBattery ?? null,
+    c.hrvStatus ?? null,
+    c.hrvBaselineLow ?? null,
+    c.garminKcal ?? null,
+    c.syncedAt ?? null,
   );
+}
+
+/** Letzte Garmin-Rohdaten (für die Fehlersuche in den Einstellungen). */
+export async function saveGarminRaw(db: SQLiteDatabase, raw: unknown): Promise<void> {
+  await db.runAsync(
+    "INSERT INTO settings (key, value) VALUES ('garmin_raw', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    JSON.stringify(raw),
+  );
+}
+
+export async function loadGarminRaw(db: SQLiteDatabase): Promise<string | null> {
+  const row = await db.getFirstAsync<{ value: string }>("SELECT value FROM settings WHERE key = 'garmin_raw'");
+  return row?.value ?? null;
 }
 
 // ---------- Wochenplan ----------

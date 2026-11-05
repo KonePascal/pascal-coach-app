@@ -25,6 +25,10 @@ Später als richtige App (ohne Laptop): Apple Developer Account + `npx eas-cli@l
 | **Verlauf** | 7-Tage-Schnitt (HRV, Ruhepuls, Schlaf, Gewicht inkl. Trend zur Vorwoche) und alle Check-ins |
 | **Einstellungen** | FTP, Gewicht, Erhalt/Defizit/Makros, Ampel-Baselines, Erinnerungen, Supplements bearbeiten, Backup-Export (JSON) |
 
+## Garmin
+
+Offizielle **Garmin Connect Personal API** (`src/lib/garmin.ts`, Zuordnung in `src/domain/garmin-parse.ts`). Schlüssel unter connect.garmin.com/app/settings/personalApiToken erstellen und in den Einstellungen einfügen; er liegt verschlüsselt im iOS-Schlüsselbund. Beim Öffnen von „Heute“ werden HRV (inkl. Garmin-Baseline), Ruhepuls, Schlaf-Score/-dauer, Body Battery und die heutigen Aktivitäten geholt (alle 20 min neu). Manuelle Angaben (Infekt, Alkohol, Gewicht) bleiben erhalten. Stimmt eine Zuordnung nicht: Einstellungen → „Rohdaten teilen“.
+
 ## Regeln (in `src/domain/`)
 
 - **Ampel** (`readiness.ts`): HRV-Trend → Ruhepuls → Schlaf. Zwei rote Marker → rot (Z1/frei). Ein rot oder zwei gelb → gelb (Q −1 Satz, Z2 −25 %). Infektzeichen → rot, kein Reiz. Alkohol → kein Q.
@@ -46,6 +50,7 @@ npx expo lint
 
 - [x] v1: Morgen-Check, Ampel, Einheit, kcal/KH, Supplements + Erinnerungen
 - [x] Sprint 1: Wochenplan bearbeitbar, Vorschau nächste 2 Tage, Backup-Export
+- [x] Garmin-Auto-Sync über die offizielle Personal API (HRV, Ruhepuls, Schlaf, Body Battery, Aktivitäten)
 - [ ] v2: Ernährungstracking mit Barcode-Scanner (Open Food Facts), eigene Rezepte (MCI-Ersatz)
 - [ ] v3: Gym-Log (Oberkörper A/B), Rad-Daten über Apple Health / Strava
 - [ ] v4: Wochenplan in der App bearbeiten, Cloud-Sync (Supabase), Auswertungen
