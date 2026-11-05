@@ -25,6 +25,8 @@ import {
   listSupplements,
   loadPlan,
   loadSettings,
+  loadTpEvents,
+  saveActivities,
   saveGarminRaw,
   takenOn,
   toggleTaken,
@@ -33,12 +35,16 @@ import {
 } from '@/db/repo';
 import { isoDate, labelDate } from '@/domain/dates';
 import type { GarminActivity } from '@/domain/garmin-parse';
+import { addDays } from '@/domain/pmc';
+import { tpToPlanned, type TpEvent } from '@/domain/trainingpeaks';
 import { nutritionFor } from '@/domain/nutrition';
 import { DAY_TYPE_LABEL, WEEK_TEMPLATE, sessionFor, upcoming, type WeekPlan } from '@/domain/plan';
 import { evaluate, fmtHours } from '@/domain/readiness';
 import { isDue, type Supplement } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type Baselines, type CheckIn, type Settings } from '@/domain/types';
+import { usePmc } from '@/hooks/use-pmc';
 import { getApiKey, syncDay } from '@/lib/garmin';
+import { syncLoad } from '@/lib/sync';
 
 const HRV_STATUS: Record<string, string> = {
   BALANCED: 'ausgeglichen',
@@ -108,39 +114,46 @@ export default function TodayScreen() {
   const [editing, setEditing] = useState(true);
   const [garmin, setGarmin] = useState<GarminState>({ status: 'idle', activities: [] });
   const syncing = useRef(false);
+  const [tp, setTp] = useState<TpEvent[]>([]);
+  const pmc = usePmc();
 
-  const load = useCallback(async () => {
-    const [s, p, c, h, sp, t] = await Promise.all([
+  const load = useCallback(async (opts?: { keepForm?: boolean }) => {
+    const [s, p, c, h, sp, t, ev] = await Promise.all([
       loadSettings(db),
       loadPlan(db),
       getCheckin(db, date),
       getHistory(db, date),
       listSupplements(db),
       takenOn(db, date),
+      loadTpEvents(db, date, addDays(date, 2)),
     ]);
+    setTp(ev);
+    void pmc.reload();
     setSettings(s);
     setPlan(p);
     setStored(c);
     setHistory(h);
     setSupps(sp);
     setTaken(t);
-    if (c) {
+    if (c && !opts?.keepForm) {
       setForm(formFrom(c));
       setEditing(false);
     }
     return { s, c, h };
-  }, [db, date]);
+  }, [db, date, pmc.reload]);
 
   /** Garmin holen und als Check-in speichern. Manuelle Angaben (Infekt, Alkohol, Gewicht …) bleiben erhalten. */
   const runSync = useCallback(
     async (force = false) => {
       if (syncing.current) return;
       const key = await getApiKey();
+      const { s, c, h } = await load();
+      // TP-Plan + Garmin-Aktivitätsverlauf (fürs PMC) im Hintergrund auffrischen
+      void syncLoad(db, s).then(() => load({ keepForm: true }));
       if (!key) {
         setGarmin({ status: 'nokey', activities: [] });
         return;
       }
-      const { s, c, h } = await load();
       const fresh = c?.syncedAt && Date.now() - new Date(c.syncedAt).getTime() < RESYNC_MS;
       if (!force && (c?.source === 'manual' || fresh)) {
         setGarmin((g) => ({ ...g, status: c?.syncedAt ? 'ok' : 'idle' }));
@@ -180,6 +193,7 @@ export default function TodayScreen() {
           light,
         );
         await saveGarminRaw(db, r.raw);
+        await saveActivities(db, r.activities);
         await load();
         const noData = m.hrv === null && m.rhr === null && m.sleepScore === null;
         setGarmin({
@@ -223,8 +237,11 @@ export default function TodayScreen() {
 
   const baselines: Baselines = { ...settings.baselines, hrvLow: stored?.hrvBaselineLow ?? settings.baselines.hrvLow };
   const readiness = evaluate(checkin, history, baselines);
-  const session = sessionFor(today, readiness, settings.ftp, plan);
-  const next = upcoming(today, 2, plan, settings.ftp);
+  const tpFor = (d: Date) => tpToPlanned(tp.filter((e) => e.date === isoDate(d)));
+  const tpToday = tpFor(today);
+  const session = sessionFor(today, readiness, settings.ftp, plan, tpToday);
+  const next = upcoming(today, 2, plan, settings.ftp, tpFor);
+  const pmcToday = pmc.model?.rows.find((r) => r.date === date);
   const food = nutritionFor(session, readiness, settings, parseNum(form.activityKcal) ?? stored?.garminKcal);
   const dueSupps = supps.filter((s) => isDue(s, today, session, checkin));
 
@@ -278,6 +295,11 @@ export default function TodayScreen() {
                 {labelDate(today)}
               </ThemedText>
               <ThemedText type="subtitle">Heute</ThemedText>
+              {pmcToday ? (
+                <ThemedText type="small" themeColor="textSecondary">
+                  Form: TSB {Math.round(pmcToday.tsb)} · Fitness {Math.round(pmcToday.ctl)} · Müdigkeit {Math.round(pmcToday.atl)}
+                </ThemedText>
+              ) : null}
             </View>
 
             {garmin.status === 'nokey' ? (
@@ -353,7 +375,7 @@ export default function TodayScreen() {
               {!editing ? <Button title="Werte ändern" variant="secondary" onPress={() => setEditing(true)} /> : null}
             </Card>
 
-            <Card title="Einheit">
+            <Card title={tpToday ? 'Einheit · TrainingPeaks' : 'Einheit · Wochenvorlage'}>
               <ThemedText type="smallBold" style={styles.big}>
                 {session.title}
               </ThemedText>
@@ -370,6 +392,17 @@ export default function TodayScreen() {
 
             {garmin.activities.length ? (
               <Card title="Heute absolviert (Garmin)">
+                {(() => {
+                  const ist = garmin.activities.reduce((sum, a) => sum + (a.tss ?? 0), 0);
+                  const planTss = (tpToday?.tss ?? session.tss) + (session.gym ? settings.gymTss : 0);
+                  if (!ist || !planTss) return null;
+                  const pct = Math.round((ist / planTss) * 100);
+                  return (
+                    <ThemedText type="smallBold" style={{ color: pct >= 80 && pct <= 120 ? '#2DB55D' : '#F2B705' }}>
+                      Plan ~{planTss} TSS · Ist {Math.round(ist)} TSS ({pct} %)
+                    </ThemedText>
+                  );
+                })()}
                 {garmin.activities.map((a) => (
                   <View key={a.id || a.start} style={{ gap: 2, paddingVertical: 2 }}>
                     <ThemedText type="smallBold">

@@ -78,17 +78,29 @@ export function plannedFor(date: Date, plan: WeekPlan = WEEK_TEMPLATE): PlannedD
 }
 
 /** Vorschau der nächsten Tage (ohne Ampel – die kennt man erst morgens). */
-export function upcoming(from: Date, days: number, plan: WeekPlan, ftp: number) {
+export function upcoming(
+  from: Date,
+  days: number,
+  plan: WeekPlan,
+  ftp: number,
+  overrideFor?: (d: Date) => PlannedDay | null,
+) {
   return Array.from({ length: days }, (_, i) => {
     const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() + i + 1);
-    const p = plannedFor(d, plan);
+    const p = overrideFor?.(d) ?? plannedFor(d, plan);
     return { date: d, ...p, details: fillWatts(p.details, ftp) };
   });
 }
 
 /** Passt die geplante Einheit an die Ampel an. */
-export function sessionFor(date: Date, r: Readiness, ftp: number, week: WeekPlan = WEEK_TEMPLATE): SessionToday {
-  const plan = plannedFor(date, week);
+export function sessionFor(
+  date: Date,
+  r: Readiness,
+  ftp: number,
+  week: WeekPlan = WEEK_TEMPLATE,
+  override?: PlannedDay | null,
+): SessionToday {
+  const plan = override ?? plannedFor(date, week);
   const base: SessionToday = { ...plan, details: fillWatts(plan.details, ftp), adjusted: false };
   const isQ = plan.dayType === 'qa' || plan.dayType === 'qb';
 

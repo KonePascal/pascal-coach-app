@@ -22,6 +22,11 @@ export default function AppTabs() {
         <NativeTabs.Trigger.Icon sf={{ default: 'calendar', selected: 'calendar' }} />
       </NativeTabs.Trigger>
 
+      <NativeTabs.Trigger name="form">
+        <NativeTabs.Trigger.Label>Form</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="chart.xyaxis.line" />
+      </NativeTabs.Trigger>
+
       <NativeTabs.Trigger name="verlauf">
         <NativeTabs.Trigger.Label>Verlauf</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="chart.line.uptrend.xyaxis" />

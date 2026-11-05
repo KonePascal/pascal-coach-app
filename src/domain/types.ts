@@ -34,6 +34,10 @@ export interface Settings {
   baselines: Baselines;
   checkinReminder: string; // HH:MM
   remindersOn: boolean;
+  tpFeedUrl: string; // TrainingPeaks webcal/.ics-Link
+  pmcSeed: { date: string; ctl: number; atl: number }; // Startwert fürs PMC (aus TP)
+  gymTss: number; // Pauschale je Krafteinheit
+  tsbLimit: number; // Leitplanke (Herbst: −30)
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -52,4 +56,8 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   checkinReminder: '07:30',
   remindersOn: false,
+  tpFeedUrl: '',
+  pmcSeed: { date: '2026-10-27', ctl: 54, atl: 44 }, // TP-Screenshot 27.10.2026
+  gymTss: 40,
+  tsbLimit: -30,
 };

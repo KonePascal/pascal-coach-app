@@ -129,3 +129,20 @@ export async function testConnection(): Promise<GarminSync> {
   await getToken(true);
   return syncDay(new Date());
 }
+
+/** Aktivitäten eines Zeitraums (für das PMC), seitenweise. */
+export async function fetchActivitiesRange(from: string, to: string): Promise<GarminActivity[]> {
+  const all: GarminActivity[] = [];
+  for (let page = 0; page < 5; page++) {
+    const list = await get('/activitylist-service/activities/search/activities', {
+      start: page * 100,
+      limit: 100,
+      startDate: from,
+      endDate: to,
+    });
+    const acts = parseActivities(list, ''); // '' = alle Tage
+    all.push(...acts);
+    if (acts.length < 100) break;
+  }
+  return all;
+}

@@ -82,6 +82,42 @@ const MIGRATIONS: ((db: SQLiteDatabase) => Promise<void>)[] = [
       ALTER TABLE checkins ADD COLUMN synced_at TEXT;
     `);
   },
+  // v4 – PMC: TrainingPeaks-Plan, Garmin-Aktivitätsverlauf, eigene TSS-Anpassungen
+  async (db) => {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS tp_events (
+        uid          TEXT PRIMARY KEY NOT NULL,
+        date         TEXT NOT NULL,
+        title        TEXT NOT NULL,
+        description  TEXT NOT NULL DEFAULT '',
+        duration_min REAL,
+        tss          REAL,
+        kind         TEXT NOT NULL,
+        day_type     TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS tp_events_date ON tp_events(date);
+
+      CREATE TABLE IF NOT EXISTS garmin_activities (
+        id           TEXT PRIMARY KEY NOT NULL,
+        date         TEXT NOT NULL,
+        name         TEXT NOT NULL,
+        type         TEXT NOT NULL DEFAULT '',
+        start        TEXT NOT NULL DEFAULT '',
+        duration_min REAL NOT NULL DEFAULT 0,
+        tss          REAL,
+        np           REAL,
+        avg_power    REAL,
+        calories     REAL
+      );
+      CREATE INDEX IF NOT EXISTS garmin_activities_date ON garmin_activities(date);
+
+      CREATE TABLE IF NOT EXISTS daily_load (
+        date        TEXT PRIMARY KEY NOT NULL,
+        planned_tss REAL,   -- eigene Plan-Anpassung (überschreibt TP/Vorlage)
+        actual_tss  REAL    -- Korrektur des Ist-Werts (überschreibt Garmin)
+      );
+    `);
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

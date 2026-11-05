@@ -1,6 +1,9 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
+import type { GarminActivity } from '@/domain/garmin-parse';
+import type { LoadOverride, StoredActivity } from '@/domain/load';
 import { WEEK_TEMPLATE, type PlannedDay, type WeekPlan } from '@/domain/plan';
+import type { TpEvent } from '@/domain/trainingpeaks';
 import type { Supplement, SupplementRule } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type CheckIn, type Light, type Settings } from '@/domain/types';
 
@@ -70,6 +73,7 @@ export async function loadSettings(db: SQLiteDatabase): Promise<Settings> {
     ...DEFAULT_SETTINGS,
     ...stored,
     baselines: { ...DEFAULT_SETTINGS.baselines, ...stored.baselines },
+    pmcSeed: { ...DEFAULT_SETTINGS.pmcSeed, ...stored.pmcSeed },
   };
 }
 
@@ -169,19 +173,164 @@ export async function savePlanDay(db: SQLiteDatabase, weekday: number, day: Plan
   );
 }
 
+// ---------- Kleine Schlüssel-Wert-Ablage ----------
+
+export async function getKv(db: SQLiteDatabase, key: string): Promise<string | null> {
+  const r = await db.getFirstAsync<{ value: string }>('SELECT value FROM settings WHERE key = ?', `kv:${key}`);
+  return r?.value ?? null;
+}
+
+export async function setKv(db: SQLiteDatabase, key: string, value: string): Promise<void> {
+  await db.runAsync(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    `kv:${key}`,
+    value,
+  );
+}
+
+// ---------- TrainingPeaks ----------
+
+/** Ersetzt die Einträge im Feed-Zeitraum (TP liefert 5 Tage zurück, 14 Tage voraus). */
+export async function replaceTpEvents(db: SQLiteDatabase, from: string, to: string, events: TpEvent[]): Promise<void> {
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM tp_events WHERE date BETWEEN ? AND ?', from, to);
+    for (const e of events) {
+      await db.runAsync(
+        `INSERT OR REPLACE INTO tp_events (uid, date, title, description, duration_min, tss, kind, day_type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        e.uid,
+        e.date,
+        e.title,
+        e.description,
+        e.durationMin,
+        e.tss,
+        e.kind,
+        e.dayType,
+      );
+    }
+  });
+}
+
+export async function loadTpEvents(db: SQLiteDatabase, from: string, to: string): Promise<TpEvent[]> {
+  const rows = await db.getAllAsync<{
+    uid: string;
+    date: string;
+    title: string;
+    description: string;
+    duration_min: number | null;
+    tss: number | null;
+    kind: TpEvent['kind'];
+    day_type: TpEvent['dayType'];
+  }>('SELECT * FROM tp_events WHERE date BETWEEN ? AND ? ORDER BY date', from, to);
+  return rows.map((r) => ({
+    uid: r.uid,
+    date: r.date,
+    title: r.title,
+    description: r.description,
+    durationMin: r.duration_min,
+    tss: r.tss,
+    kind: r.kind,
+    dayType: r.day_type,
+  }));
+}
+
+// ---------- Garmin-Aktivitäten ----------
+
+export async function saveActivities(db: SQLiteDatabase, acts: GarminActivity[]): Promise<void> {
+  if (!acts.length) return;
+  await db.withTransactionAsync(async () => {
+    for (const a of acts) {
+      if (!a.id) continue;
+      await db.runAsync(
+        `INSERT OR REPLACE INTO garmin_activities (id, date, name, type, start, duration_min, tss, np, avg_power, calories)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        a.id,
+        a.start.slice(0, 10),
+        a.name,
+        a.type,
+        a.start,
+        a.durationMin,
+        a.tss,
+        a.normPower,
+        a.avgPower,
+        a.calories,
+      );
+    }
+  });
+}
+
+export async function loadActivities(db: SQLiteDatabase, from: string, to: string): Promise<StoredActivity[]> {
+  const rows = await db.getAllAsync<{
+    id: string;
+    date: string;
+    type: string;
+    duration_min: number;
+    tss: number | null;
+    np: number | null;
+    avg_power: number | null;
+  }>('SELECT id, date, type, duration_min, tss, np, avg_power FROM garmin_activities WHERE date BETWEEN ? AND ?', from, to);
+  return rows.map((r) => ({
+    id: r.id,
+    date: r.date,
+    type: r.type,
+    durationMin: r.duration_min,
+    tss: r.tss,
+    np: r.np,
+    avgPower: r.avg_power,
+  }));
+}
+
+// ---------- TSS-Anpassungen ----------
+
+export async function loadOverrides(db: SQLiteDatabase, from: string, to: string): Promise<Map<string, LoadOverride>> {
+  const rows = await db.getAllAsync<{ date: string; planned_tss: number | null; actual_tss: number | null }>(
+    'SELECT * FROM daily_load WHERE date BETWEEN ? AND ?',
+    from,
+    to,
+  );
+  return new Map(rows.map((r) => [r.date, { planned: r.planned_tss, actual: r.actual_tss }]));
+}
+
+export async function setOverride(
+  db: SQLiteDatabase,
+  date: string,
+  field: 'planned' | 'actual',
+  value: number | null,
+): Promise<void> {
+  const col = field === 'planned' ? 'planned_tss' : 'actual_tss';
+  await db.runAsync(
+    `INSERT INTO daily_load (date, ${col}) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET ${col} = excluded.${col}`,
+    date,
+    value,
+  );
+  await db.runAsync('DELETE FROM daily_load WHERE planned_tss IS NULL AND actual_tss IS NULL');
+}
+
 // ---------- Backup ----------
 
 /** Kompletter Datenexport als JSON (für Backup / späteren Import). */
 export async function exportAll(db: SQLiteDatabase): Promise<string> {
-  const [settings, checkins, supplements, supplementLog, planDays] = await Promise.all([
+  const [settings, checkins, supplements, supplementLog, planDays, dailyLoad, garminActivities] = await Promise.all([
     db.getAllAsync('SELECT * FROM settings'),
     db.getAllAsync('SELECT * FROM checkins ORDER BY date'),
     db.getAllAsync('SELECT * FROM supplements'),
     db.getAllAsync('SELECT * FROM supplement_log ORDER BY date'),
     db.getAllAsync('SELECT * FROM plan_days ORDER BY weekday'),
+    db.getAllAsync('SELECT * FROM daily_load ORDER BY date'),
+    db.getAllAsync('SELECT * FROM garmin_activities ORDER BY date'),
   ]);
   return JSON.stringify(
-    { app: 'coach', exportedAt: new Date().toISOString(), settings, checkins, supplements, supplementLog, planDays },
+    {
+      app: 'coach',
+      exportedAt: new Date().toISOString(),
+      settings,
+      checkins,
+      supplements,
+      supplementLog,
+      planDays,
+      dailyLoad,
+      garminActivities,
+    },
     null,
     1,
   );

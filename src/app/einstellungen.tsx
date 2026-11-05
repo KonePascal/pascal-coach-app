@@ -30,6 +30,7 @@ import {
   saveSupplement,
 } from '@/db/repo';
 import { parseTime } from '@/domain/dates';
+import { fetchTpFeed } from '@/lib/trainingpeaks';
 import { RULE_LABEL, type Supplement, type SupplementRule } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type Settings } from '@/domain/types';
 import { getApiKey, setApiKey, testConnection } from '@/lib/garmin';
@@ -50,6 +51,8 @@ export default function SettingsScreen() {
   const [keyInput, setKeyInput] = useState('');
   const [garminBusy, setGarminBusy] = useState(false);
   const [garminInfo, setGarminInfo] = useState<string | null>(null);
+  const [tpInfo, setTpInfo] = useState<string | null>(null);
+  const [tpBusy, setTpBusy] = useState(false);
 
   const load = useCallback(async () => {
     const [st, sp] = await Promise.all([loadSettings(db), listSupplements(db)]);
@@ -66,6 +69,11 @@ export default function SettingsScreen() {
       sleepGreen: String(st.baselines.sleepGreen),
       sleepRed: String(st.baselines.sleepRed),
       sleepHoursTarget: String(st.baselines.sleepHoursTarget),
+      seedDate: st.pmcSeed.date,
+      seedCtl: String(st.pmcSeed.ctl),
+      seedAtl: String(st.pmcSeed.atl),
+      gymTss: String(st.gymTss),
+      tsbLimit: String(st.tsbLimit),
     });
     setSupps(sp.map((x) => ({ ...x, key: String(x.id) })));
     setHasKey(!!(await getApiKey()));
@@ -117,6 +125,29 @@ export default function SettingsScreen() {
     }
   };
 
+  const testTp = async () => {
+    const url = s.tpFeedUrl.trim();
+    if (!url) {
+      Alert.alert('Link fehlt', 'Füge den Kalender-Link aus TrainingPeaks ein.');
+      return;
+    }
+    setTpBusy(true);
+    setTpInfo(null);
+    try {
+      const events = await fetchTpFeed(url);
+      await saveSettings(db, { ...(await loadSettings(db)), tpFeedUrl: url });
+      const preview = events
+        .slice(0, 6)
+        .map((e) => `${e.date.slice(8, 10)}.${e.date.slice(5, 7)}. ${e.title}${e.durationMin ? ` · ${e.durationMin} min` : ''}${e.tss ? ` · ${e.tss} TSS` : ''}`)
+        .join('\n');
+      setTpInfo(`✅ ${events.length} Einheiten gefunden (gespeichert):\n${preview}`);
+    } catch (e) {
+      setTpInfo(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setTpBusy(false);
+    }
+  };
+
   const disconnectGarmin = () =>
     Alert.alert('Garmin trennen?', 'Der Schlüssel wird vom iPhone gelöscht.', [
       { text: 'Abbrechen', style: 'cancel' },
@@ -161,6 +192,13 @@ export default function SettingsScreen() {
         sleepRed: n('sleepRed', s.baselines.sleepRed),
         sleepHoursTarget: n('sleepHoursTarget', s.baselines.sleepHoursTarget),
       },
+      pmcSeed: {
+        date: /^\d{4}-\d{2}-\d{2}$/.test(num.seedDate ?? '') ? (num.seedDate as string) : s.pmcSeed.date,
+        ctl: n('seedCtl', s.pmcSeed.ctl),
+        atl: n('seedAtl', s.pmcSeed.atl),
+      },
+      gymTss: n('gymTss', s.gymTss),
+      tsbLimit: n('tsbLimit', s.tsbLimit),
     };
     if (next.remindersOn && !(await ensurePermission())) {
       next.remindersOn = false;
@@ -217,6 +255,49 @@ export default function SettingsScreen() {
                   </Pressable>
                 </View>
               ) : null}
+            </Card>
+
+            <Card title="TrainingPeaks-Plan">
+              <ThemedText type="small" themeColor="textSecondary">
+                TrainingPeaks (Web) → Settings → Account → Calendar → Link kopieren (webcal://…). Die App liest damit deine geplanten
+                Einheiten der nächsten 14 Tage. Änderungen in TP können bis zu einige Stunden brauchen.
+              </ThemedText>
+              <TextInput
+                value={s.tpFeedUrl}
+                onChangeText={(v) => setS((p) => ({ ...p, tpFeedUrl: v }))}
+                placeholder="webcal://www.trainingpeaks.com/ical/…"
+                placeholderTextColor={theme.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={[styles.keyInput, { color: theme.text, backgroundColor: theme.background }]}
+              />
+              {tpBusy ? <ActivityIndicator /> : null}
+              {tpInfo ? <ThemedText type="small">{tpInfo}</ThemedText> : null}
+              <Button title="Plan laden & testen" onPress={() => void testTp()} />
+            </Card>
+
+            <Card title="Form-Modell (PMC)">
+              <ThemedText type="small" themeColor="textSecondary">
+                Startwert aus TrainingPeaks (Performance Management Chart) an einem Tag. Ab da rechnet die App mit den Garmin-TSS weiter.
+                Weicht die Kurve von TP ab: aktuellen TP-Wert mit heutigem Datum eintragen.
+              </ThemedText>
+              <View style={styles.grid}>
+                <NumberField
+                  label="Datum (JJJJ-MM-TT)"
+                  keyboard="numbers-and-punctuation"
+                  value={num.seedDate ?? ''}
+                  onChange={(v) => setNum((p) => ({ ...p, seedDate: v }))}
+                />
+                {field('seedCtl', 'CTL (Fitness)')}
+                {field('seedAtl', 'ATL (Müdigkeit)')}
+                {field('gymTss', 'TSS je Krafteinheit')}
+                <NumberField
+                  label="TSB-Grenze"
+                  keyboard="numbers-and-punctuation"
+                  value={num.tsbLimit ?? ''}
+                  onChange={(v) => setNum((p) => ({ ...p, tsbLimit: v }))}
+                />
+              </View>
             </Card>
 
             <Card title="Athlet">
