@@ -47,30 +47,33 @@ export async function rescheduleAll(
     count++;
   }
 
+  // Tägliche Supplements: eine Mitteilung je Uhrzeit (z. B. „Morgens: Multi, Zink, D3K2“)
+  const daily = supplements.filter((s) => s.active && s.rule !== 'caffeine' && s.rule !== 'training');
+  const byTime = new Map<string, Supplement[]>();
+  for (const s of daily) byTime.set(s.time, [...(byTime.get(s.time) ?? []), s]);
+  for (const [time, list] of byTime) {
+    const t = parseTime(time);
+    if (!t) continue;
+    const title = t.hour < 14 ? '☀️ Supplements morgens' : '🌙 Supplements abends';
+    await Notifications.scheduleNotificationAsync({
+      content: { title, body: list.map((s) => `${s.name} (${s.dose})`).join(', ') },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, ...t },
+    });
+    count++;
+  }
+
+  // Regelbasierte (Koffein vor Q-A, Elektrolyte an Trainingstagen): wöchentlich an passenden Plantagen
   for (const s of supplements) {
-    if (!s.active) continue;
+    if (!s.active || (s.rule !== 'caffeine' && s.rule !== 'training')) continue;
     const t = parseTime(s.time);
     if (!t) continue;
-    const content = { title: s.name, body: `${s.dose} – abhaken in der App` };
-
-    if (s.rule === 'caffeine' || s.rule === 'training') {
-      for (const [day, p] of Object.entries(plan)) {
-        const due = s.rule === 'caffeine' ? !!p.caffeine : p.durationMin > 0;
-        if (!due) continue;
-        await Notifications.scheduleNotificationAsync({
-          content,
-          trigger: {
-            type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
-            weekday: toExpoWeekday(Number(day)),
-            ...t,
-          },
-        });
-        count++;
-      }
-    } else {
+    const content = { title: s.rule === 'caffeine' ? '☕ Koffein vor der Q-Einheit' : s.name, body: `${s.name} ${s.dose}` };
+    for (const [day, p] of Object.entries(plan)) {
+      const due = s.rule === 'caffeine' ? !!p.caffeine : p.durationMin > 0;
+      if (!due) continue;
       await Notifications.scheduleNotificationAsync({
         content,
-        trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, ...t },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday: toExpoWeekday(Number(day)), ...t },
       });
       count++;
     }

@@ -21,25 +21,26 @@ import {
   loadPlan,
   loadTpEvents,
   takenOn,
+  toggleTaken,
   workoutHistory,
   type StoredCheckIn,
 } from '@/db/repo';
 import { fromIso, isoDate, labelDate } from '@/domain/dates';
-import { plannedFor } from '@/domain/plan';
+import { plannedFor, sessionFor, type SessionToday } from '@/domain/plan';
 import { rampRate, weekStart } from '@/domain/plan-check';
 import { addDays } from '@/domain/pmc';
 import { evaluate, fmtHours } from '@/domain/readiness';
 import { resolveWorkout, type ResolvedWorkout } from '@/domain/resolve';
-import { isDue } from '@/domain/supplements';
+import { GROUP_LABEL, isDue, nextOpenGroup, type Supplement } from '@/domain/supplements';
 import { tpToPlanned } from '@/domain/trainingpeaks';
 import type { Baselines, Light } from '@/domain/types';
 import { COMPLIANCE_COLOR, COMPLIANCE_LABEL, buildRate, buildWeek, type WeekSummary } from '@/domain/week';
-import { totalSeconds, workoutTss } from '@/domain/workout';
+import { describeSteps, reduceWorkout, totalSeconds, workoutTss } from '@/domain/workout';
 import { usePmc } from '@/hooks/use-pmc';
 import { useDayTarget } from '@/hooks/use-day-target';
 import { sum, type Macros } from '@/domain/food';
 import { useTheme } from '@/hooks/use-theme';
-import { syncLoad } from '@/lib/sync';
+import { syncMorning } from '@/lib/morning-sync';
 
 const r0 = (n: number) => Math.round(n);
 const arrow = (d: number) => (d > 0.5 ? '↑' : d < -0.5 ? '↓' : '–');
@@ -51,6 +52,10 @@ interface StartData {
   workout: ResolvedWorkout | null;
   week: WeekSummary;
   supps: { due: number; taken: number };
+  dueList: Supplement[];
+  takenSet: Set<number>;
+  session: SessionToday;
+  tomorrowQ: boolean;
   eaten: Macros;
   baselines: Baselines;
 }
@@ -152,8 +157,12 @@ export default function StartScreen() {
     const planned = tpToPlanned(tpToday) ?? plannedFor(new Date(), plan);
     const workout = resolveWorkout({ date: today, tp: tpToday, planned, library, history: wHistory, ftp: s.ftp });
     const baselines: Baselines = { ...s.baselines, hrvLow: checkin?.hrvBaselineLow ?? s.baselines.hrvLow };
-    const session = { durationMin: planned.durationMin, dayType: planned.dayType, caffeine: planned.caffeine } as Parameters<typeof isDue>[2];
+    const r = evaluate(checkin ?? { date: today, symptoms: false, alcohol: false }, history, baselines);
+    const session = sessionFor(new Date(), r, s.ftp, plan, tpToPlanned(tpToday));
     const due = supps.filter((x) => isDue(x, new Date(), session, checkin));
+    const tomorrow = addDays(today, 1);
+    const tTp = tp.filter((e) => e.date === tomorrow);
+    const tPlanned = tpToPlanned(tTp) ?? plannedFor(fromIso(tomorrow), plan);
     setData({
       checkin,
       history,
@@ -161,26 +170,39 @@ export default function StartScreen() {
       week: buildWeek({ monday, today, tp, activities: acts, ftp: s.ftp, gymTss: s.gymTss }),
       supps: { due: due.length, taken: due.filter((x) => taken.has(x.id)).length },
       eaten: sum(foodLog),
+      dueList: due,
+      takenSet: taken,
+      session,
+      tomorrowQ: tPlanned.dayType === 'qa' || tPlanned.dayType === 'qb',
       baselines,
     });
   }, [db, reload, today, loadTarget]);
 
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      await load();
-      if (model) await syncLoad(db, model.settings);
-      await load();
-    } finally {
-      setRefreshing(false);
-    }
-  }, [db, load, model]);
+  const refresh = useCallback(
+    async (force = false) => {
+      setRefreshing(true);
+      try {
+        await load();
+        await syncMorning(db, force);
+        await load();
+      } finally {
+        setRefreshing(false);
+      }
+    },
+    [db, load],
+  );
 
+  // App öffnen = alles synchronisieren (Garmin-Nacht, TP-Plan, Verlauf)
   useFocusEffect(
     useCallback(() => {
-      void load();
-    }, [load]),
+      void refresh();
+    }, [refresh]),
   );
+
+  const tickGroup = async (items: Supplement[]) => {
+    for (const it of items) await toggleTaken(db, today, it.id, true);
+    await load();
+  };
 
   const rows = model?.rows ?? [];
   const tRow = rows.find((r) => r.date === today);
@@ -201,7 +223,7 @@ export default function StartScreen() {
       <SafeAreaView style={styles.safe} edges={['top']}>
         <ScrollView
           contentContainerStyle={styles.scroll}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}>
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh(true)} />}>
           <View>
             <ThemedText type="small" themeColor="textSecondary">
               {labelDate(new Date())}
@@ -209,25 +231,100 @@ export default function StartScreen() {
             <ThemedText type="subtitle">Hallo Pascal</ThemedText>
           </View>
 
-          {/* Bereitschaft */}
-          {readiness ? (
-            <Pressable onPress={() => router.navigate('/heute')}>
-              <Card style={{ borderLeftWidth: 6, borderLeftColor: LIGHT_COLOR[readiness.light] }}>
+          {/* Dein Tag – alles Wichtige auf einen Blick */}
+          {data ? (
+            <Card style={{ borderLeftWidth: 6, borderLeftColor: readiness ? LIGHT_COLOR[readiness.light] : '#8885', gap: 10 }}>
+              <Pressable onPress={() => router.navigate('/heute')}>
                 <ThemedText type="smallBold" style={{ fontSize: 16 }}>
-                  {LIGHT_EMOJI[readiness.light]} {readiness.headline}
+                  {readiness ? `${LIGHT_EMOJI[readiness.light]} ${readiness.headline}` : '☀️ Noch keine Nachtwerte – Uhr synchronisieren oder Morgen-Check'}
                 </ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Details & Morgen-Check ›
-                </ThemedText>
-              </Card>
-            </Pressable>
-          ) : (
-            <Pressable onPress={() => router.navigate('/heute')}>
-              <Card>
-                <ThemedText type="smallBold">☀️ Morgen-Check noch offen ›</ThemedText>
-              </Card>
-            </Pressable>
-          )}
+              </Pressable>
+
+              <Pressable onPress={() => router.navigate('/heute')} style={styles.dayRow}>
+                <ThemedText style={styles.dayIcon}>🚴</ThemedText>
+                <View style={{ flex: 1 }}>
+                  <ThemedText type="smallBold">
+                    {data.session.durationMin ? `${data.session.title} · ${fmtHours(data.session.durationMin / 60)}` : data.session.title}
+                  </ThemedText>
+                  {(() => {
+                    const w = data.workout?.workout;
+                    if (!w || data.session.dayType === 'rest') return null;
+                    const ww = readiness?.light === 'yellow' && (data.session.dayType === 'qa' || data.session.dayType === 'qb') ? reduceWorkout(w) : w;
+                    const key = describeSteps(ww, model?.settings.ftp ?? 289).find((l) => /×/.test(l)) ?? describeSteps(ww, model?.settings.ftp ?? 289)[1];
+                    return key ? (
+                      <ThemedText type="small" themeColor="textSecondary">
+                        {key}
+                      </ThemedText>
+                    ) : null;
+                  })()}
+                  {data.session.adjustNote ? (
+                    <ThemedText type="small" style={{ color: LIGHT_COLOR.yellow }}>
+                      ↳ {data.session.adjustNote}
+                    </ThemedText>
+                  ) : null}
+                </View>
+              </Pressable>
+
+              {data.session.caffeine ? (
+                <View style={styles.dayRow}>
+                  <ThemedText style={styles.dayIcon}>☕</ThemedText>
+                  <ThemedText type="small" style={{ flex: 1 }}>
+                    300–400 mg Koffein 45–60 min vor dem Start (nicht nach 14 Uhr)
+                  </ThemedText>
+                </View>
+              ) : null}
+
+              {target ? (
+                <Pressable onPress={() => router.push('/essen')} style={styles.dayRow}>
+                  <ThemedText style={styles.dayIcon}>🍽️</ThemedText>
+                  <ThemedText type="small" style={{ flex: 1 }}>
+                    <ThemedText type="smallBold">{Math.max(0, target.kcal - data.eaten.kcal)} kcal</ThemedText> übrig · KH{' '}
+                    {Math.max(0, Math.round(target.carbsG - data.eaten.carbs))} g · Protein {Math.max(0, Math.round(target.proteinG - data.eaten.protein))} g
+                    {data.session.durationMin >= 90 ? ' · unterwegs 60–80 g KH/h' : ''}
+                  </ThemedText>
+                  <ThemedText type="small" style={{ color: '#3c87f7' }}>
+                    ＋
+                  </ThemedText>
+                </Pressable>
+              ) : null}
+
+              {(() => {
+                const next = nextOpenGroup(data.dueList, data.takenSet, new Date());
+                if (!next) {
+                  return data.dueList.length ? (
+                    <View style={styles.dayRow}>
+                      <ThemedText style={styles.dayIcon}>💊</ThemedText>
+                      <ThemedText type="small" style={{ color: LIGHT_COLOR.green }}>
+                        Alle Supplements erledigt
+                      </ThemedText>
+                    </View>
+                  ) : null;
+                }
+                return (
+                  <View style={styles.dayRow}>
+                    <ThemedText style={styles.dayIcon}>💊</ThemedText>
+                    <ThemedText type="small" style={{ flex: 1 }}>
+                      {GROUP_LABEL[next.group].replace(/^\S+\s/, '')}: {next.items.map((i) => i.name).join(', ')}
+                    </ThemedText>
+                    <Pressable onPress={() => void tickGroup(next.items)} style={styles.doneBtn}>
+                      <ThemedText type="smallBold" style={{ color: '#fff' }}>
+                        ✓
+                      </ThemedText>
+                    </Pressable>
+                  </View>
+                );
+              })()}
+
+              {data.tomorrowQ ? (
+                <View style={styles.dayRow}>
+                  <ThemedText style={styles.dayIcon}>😴</ThemedText>
+                  <ThemedText type="small" style={{ flex: 1 }}>
+                    Morgen Q-Einheit: früh & leicht essen, Bettzeit 22:00
+                  </ThemedText>
+                </View>
+              ) : null}
+            </Card>
+          ) : null}
 
           {/* Leistungseinblicke */}
           <ThemedText type="smallBold" style={styles.section}>
@@ -440,19 +537,6 @@ export default function StartScreen() {
             </Pressable>
           ) : null}
 
-          {/* Supplements kurz */}
-          {data && data.supps.due ? (
-            <Pressable onPress={() => router.navigate('/heute')}>
-              <Card>
-                <View style={styles.between}>
-                  <ThemedText type="smallBold">💊 Supplements heute</ThemedText>
-                  <ThemedText type="smallBold" style={{ color: data.supps.taken === data.supps.due ? LIGHT_COLOR.green : theme.text }}>
-                    {data.supps.taken}/{data.supps.due}
-                  </ThemedText>
-                </View>
-              </Card>
-            </Pressable>
-          ) : null}
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -476,4 +560,7 @@ const styles = StyleSheet.create({
   compl: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
   complItem: { flexDirection: 'row', alignItems: 'center', gap: 6, width: '47%' },
   dot: { width: 10, height: 10, borderRadius: 5 },
+  dayRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  dayIcon: { fontSize: 18, width: 26, textAlign: 'center' },
+  doneBtn: { backgroundColor: '#2DB55D', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 4 },
 });

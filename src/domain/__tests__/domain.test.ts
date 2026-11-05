@@ -130,3 +130,26 @@ describe('Bearbeitbarer Wochenplan', () => {
     expect(next[0].date.getMonth()).toBe(11);
   });
 });
+
+import { grouped, nextOpenGroup } from '../supplements';
+
+describe('Supplement-Gruppen', () => {
+  const list = DEFAULT_SUPPLEMENTS.map((s, i) => ({ ...s, id: i + 1 })) as Supplement[];
+
+  test('morgens / Training / abends', () => {
+    const g = grouped(list);
+    expect(g.map((x) => [x.group, x.items.length])).toEqual([
+      ['morgens', 3],
+      ['training', 1],
+      ['abends', 4],
+    ]);
+  });
+
+  test('nächste offene Gruppe nach Uhrzeit', () => {
+    const due = list.filter((s) => s.rule !== 'caffeine');
+    expect(nextOpenGroup(due, new Set(), new Date(2026, 10, 5, 8, 0))?.group).toBe('morgens');
+    const morningDone = new Set(due.filter((s) => s.time < '12:00').map((s) => s.id));
+    expect(nextOpenGroup(due, morningDone, new Date(2026, 10, 5, 12, 0))?.group).toBe('abends');
+    expect(nextOpenGroup(due, new Set(due.map((s) => s.id)), new Date())).toBeNull();
+  });
+});

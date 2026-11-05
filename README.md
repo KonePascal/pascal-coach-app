@@ -20,11 +20,15 @@ Später als richtige App (ohne Laptop): Apple Developer Account + `npx eas-cli@l
 
 | Tab | Inhalt |
 |---|---|
-| **Start** | Übersicht wie TrainingPeaks: Bereitschaft, Fitness/Form/Ermüdung mit Trend, Aufbau-Tempo (Ramp Rate), Erholung (HRV/Ruhepuls/Schlaf mit Band), heutiges Training mit Profil, Wochen-Snapshot (Dauer/TSS, Umsetzung), Supplements |
+| **Start** | **„Dein Tag“** (Ampel, Einheit mit Kern-Intervall, Koffein, kcal/KH übrig, nächste Supplements mit 1-Tipp-✓, Schlaf-Hinweis vor Q-Tagen) + Übersicht wie TrainingPeaks: Bereitschaft, Fitness/Form/Ermüdung mit Trend, Aufbau-Tempo (Ramp Rate), Erholung (HRV/Ruhepuls/Schlaf mit Band), heutiges Training mit Profil, Wochen-Snapshot (Dauer/TSS, Umsetzung), Supplements |
 | **Heute** | Morgen-Check (Garmin automatisch), Ampel, Einheit + Workout (.zwo), Plan vs. Ist, Essen, Supplements |
 | **Woche** | Kalenderwoche mit Navigation: TP-Plan vs. Garmin-Ist je Tag, Umsetzung (grün/gelb/orange/rot/grau), Details + ZWO; darunter Wochenvorlage (Fallback) und .zwo-Bibliothek |
 | **Form** | PMC-Chart, Prognose, Plan-Check, TSS je Tag anpassen, Morgenwerte 14 Tage |
 | **Mehr** | Garmin, TrainingPeaks, PMC-Startwert, Profil & Zonen, Ernährung, Ampel, Erinnerungen, Supplements, Backup |
+
+## Sync
+
+App öffnen = alles aktuell: `src/lib/morning-sync.ts` holt Garmin-Nachtwerte → Check-in mit Ampel, heutige Aktivitäten, TP-Plan, Aktivitätsverlauf und Gewicht (läuft nie doppelt, alle 20 min neu; nach unten ziehen = erzwingen).
 
 ## Garmin
 

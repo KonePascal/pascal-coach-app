@@ -57,3 +57,37 @@ export function isDue(s: Supplement, date: Date, session: SessionToday, checkin?
     }
   }
 }
+
+export type SupplementGroup = 'morgens' | 'training' | 'abends';
+
+export function groupOf(s: Supplement): SupplementGroup {
+  if (s.rule === 'caffeine' || s.rule === 'training') return 'training';
+  return Number(s.time.slice(0, 2)) < 14 ? 'morgens' : 'abends';
+}
+
+export const GROUP_LABEL: Record<SupplementGroup, string> = {
+  morgens: '☀️ Morgens',
+  training: '🚴 Training',
+  abends: '🌙 Abends',
+};
+
+/** Gruppen in Tagesreihenfolge, nur fällige Supplements. */
+export function grouped(due: Supplement[]): { group: SupplementGroup; items: Supplement[] }[] {
+  const order: SupplementGroup[] = ['morgens', 'training', 'abends'];
+  return order
+    .map((g) => ({ group: g, items: due.filter((s) => groupOf(s) === g).sort((a, b) => a.time.localeCompare(b.time)) }))
+    .filter((x) => x.items.length > 0);
+}
+
+/** Nächste noch offene Gruppe zur aktuellen Uhrzeit (für „Dein Tag“). */
+export function nextOpenGroup(
+  due: Supplement[],
+  taken: Set<number>,
+  now: Date,
+): { group: SupplementGroup; items: Supplement[] } | null {
+  const groups = grouped(due).map((g) => ({ ...g, items: g.items.filter((s) => !taken.has(s.id)) })).filter((g) => g.items.length);
+  if (!groups.length) return null;
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  // überfällige zuerst, sonst die nächste
+  return groups.find((g) => g.items.some((s) => s.time <= hhmm)) ?? groups[0];
+}

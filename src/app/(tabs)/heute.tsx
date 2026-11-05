@@ -30,8 +30,6 @@ import {
   loadTpEvents,
   logWorkout,
   workoutHistory,
-  saveActivities,
-  saveGarminRaw,
   takenOn,
   toggleTaken,
   upsertCheckin,
@@ -49,11 +47,10 @@ import { WorkoutCard } from '@/components/workout-card';
 import { MacroBars } from '@/components/macro-bars';
 import { sum, type LogEntry } from '@/domain/food';
 import { evaluate, fmtHours } from '@/domain/readiness';
-import { isDue, type Supplement } from '@/domain/supplements';
+import { GROUP_LABEL, grouped, isDue, type Supplement } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type Baselines, type CheckIn, type Settings } from '@/domain/types';
 import { usePmc } from '@/hooks/use-pmc';
-import { getApiKey, syncDay } from '@/lib/garmin';
-import { syncLoad } from '@/lib/sync';
+import { syncMorning } from '@/lib/morning-sync';
 
 const HRV_STATUS: Record<string, string> = {
   BALANCED: 'ausgeglichen',
@@ -61,7 +58,6 @@ const HRV_STATUS: Record<string, string> = {
   LOW: 'niedrig',
   POOR: 'schlecht',
 };
-const RESYNC_MS = 20 * 60 * 1000;
 
 interface GarminState {
   status: 'nokey' | 'idle' | 'syncing' | 'ok' | 'error';
@@ -157,76 +153,26 @@ export default function TodayScreen() {
     return { s, c, h };
   }, [db, date, pmc.reload]);
 
-  /** Garmin holen und als Check-in speichern. Manuelle Angaben (Infekt, Alkohol, Gewicht …) bleiben erhalten. */
+  /** Zentraler Sync (Garmin-Nacht + TP + Verlauf); Heute zeigt nur den Status. */
   const runSync = useCallback(
     async (force = false) => {
       if (syncing.current) return;
-      const key = await getApiKey();
-      const { s, c, h } = await load();
-      // TP-Plan + Garmin-Aktivitätsverlauf (fürs PMC) im Hintergrund auffrischen
-      void syncLoad(db, s).then(() => load({ keepForm: true }));
-      if (!key) {
-        setGarmin({ status: 'nokey', activities: [] });
-        return;
-      }
-      const fresh = c?.syncedAt && Date.now() - new Date(c.syncedAt).getTime() < RESYNC_MS;
-      if (!force && (c?.source === 'manual' || fresh)) {
-        setGarmin((g) => ({ ...g, status: c?.syncedAt ? 'ok' : 'idle' }));
-        return;
-      }
       syncing.current = true;
+      await load();
       setGarmin((g) => ({ ...g, status: 'syncing' }));
       try {
-        const r = await syncDay(today);
-        const m = r.morning;
-        const merged: CheckIn = {
-          date,
-          hrv: m.hrv ?? c?.hrv ?? null,
-          rhr: m.rhr ?? c?.rhr ?? null,
-          sleepScore: m.sleepScore ?? c?.sleepScore ?? null,
-          sleepHours: m.sleepHours ?? c?.sleepHours ?? null,
-          recovery: c?.recovery ?? null,
-          weight: c?.weight ?? null,
-          symptoms: c?.symptoms ?? false,
-          alcohol: c?.alcohol ?? false,
-          note: c?.note ?? null,
-        };
-        const baseline: Baselines = { ...s.baselines, hrvLow: m.hrvBaselineLow ?? s.baselines.hrvLow };
-        const light = evaluate(merged, h, baseline).light;
-        await upsertCheckin(
-          db,
-          {
-            ...merged,
-            activityKcal: c?.activityKcal ?? null,
-            source: 'garmin',
-            bodyBattery: m.bodyBattery,
-            hrvStatus: m.hrvStatus,
-            hrvBaselineLow: m.hrvBaselineLow,
-            garminKcal: r.trainingKcal,
-            syncedAt: r.syncedAt,
-          },
-          light,
-        );
-        await saveGarminRaw(db, r.raw);
-        await saveActivities(db, r.activities);
+        const r = await syncMorning(db, force);
         await load();
-        const noData = m.hrv === null && m.rhr === null && m.sleepScore === null;
         setGarmin({
-          status: r.errors.length && noData ? 'error' : 'ok',
-          message: noData
-            ? 'Noch keine Nachtwerte – Uhr mit der Garmin-App synchronisieren und neu laden.'
-            : r.errors.length
-              ? `Teilweise geladen (${r.errors.length} Fehler)`
-              : undefined,
+          status: r.status === 'skipped' ? 'ok' : r.status,
+          message: r.message,
           activities: r.activities,
         });
-      } catch (e) {
-        setGarmin((g) => ({ ...g, status: 'error', message: e instanceof Error ? e.message : String(e) }));
       } finally {
         syncing.current = false;
       }
     },
-    [db, date, load, today],
+    [db, load],
   );
 
   useFocusEffect(
@@ -324,6 +270,11 @@ export default function TodayScreen() {
   };
 
   const set = <K extends keyof Form>(k: K) => (v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
+
+  const tickAll = async (ids: number[]) => {
+    for (const id of ids) await toggleTaken(db, date, id, true);
+    setTaken((prev) => new Set([...prev, ...ids]));
+  };
 
   const toggle = async (id: number) => {
     const next = !taken.has(id);
@@ -512,15 +463,32 @@ export default function TodayScreen() {
                   Heute nichts fällig.
                 </ThemedText>
               ) : (
-                dueSupps.map((s) => (
-                  <Check
-                    key={s.id}
-                    checked={taken.has(s.id)}
-                    label={`${s.time}  ${s.name}`}
-                    sub={s.dose}
-                    onPress={() => void toggle(s.id)}
-                  />
-                ))
+                grouped(dueSupps).map((g) => {
+                  const open = g.items.filter((x) => !taken.has(x.id));
+                  return (
+                    <View key={g.group} style={{ gap: 2 }}>
+                      <View style={styles.groupHead}>
+                        <ThemedText type="smallBold">
+                          {GROUP_LABEL[g.group]} · {g.items[0].time}
+                        </ThemedText>
+                        {open.length ? (
+                          <Pressable onPress={() => void tickAll(open.map((x) => x.id))}>
+                            <ThemedText type="smallBold" style={{ color: '#2DB55D' }}>
+                              alle ✓
+                            </ThemedText>
+                          </Pressable>
+                        ) : (
+                          <ThemedText type="small" style={{ color: '#2DB55D' }}>
+                            erledigt
+                          </ThemedText>
+                        )}
+                      </View>
+                      {g.items.map((s) => (
+                        <Check key={s.id} checked={taken.has(s.id)} label={s.name} sub={s.dose} onPress={() => void toggle(s.id)} />
+                      ))}
+                    </View>
+                  );
+                })
               )}
             </Card>
             <Card title="Nächste Tage">
@@ -558,5 +526,6 @@ const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
   big: { fontSize: 17, lineHeight: 24 },
   garminRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  groupHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 6 },
   kcalRow: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.two },
 });
