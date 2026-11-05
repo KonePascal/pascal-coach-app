@@ -402,3 +402,74 @@ export function bestMatch<T extends { name: string }>(title: string, library: T[
   }
   return best;
 }
+
+/** Leistungszone nach Anteil FTP (Coggan, wie Strava). */
+export function zoneOf(f: number): { zone: number; name: string } {
+  if (f < 0.56) return { zone: 1, name: 'Erholung' };
+  if (f < 0.76) return { zone: 2, name: 'Grundlage' };
+  if (f < 0.91) return { zone: 3, name: 'Tempo' };
+  if (f < 1.06) return { zone: 4, name: 'Schwelle' };
+  if (f < 1.21) return { zone: 5, name: 'VO2max' };
+  return { zone: 6, name: 'Anaerob' };
+}
+
+export interface Block {
+  title: string;
+  /** Startzeit ab Beginn, z. B. „0:10“ */
+  at: string;
+  duration: string;
+  /** Hauptzeile: Watt + % FTP */
+  target: string;
+  /** Zusatzzeilen (Intervalle: Belastung/Erholung) */
+  lines: string[];
+  /** maßgeblicher FTP-Anteil für die Farbe */
+  f: number;
+}
+
+const hmm = (sec: number) => `${Math.floor(sec / 3600)}:${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}`;
+
+/** Workout als nummerierbare Blöcke für die Detailansicht. */
+export function workoutBlocks(w: Workout, ftp: number): Block[] {
+  const W = (f: number) => `${Math.round(f * ftp)} W`;
+  const P = (f: number) => `${Math.round(f * 100)} %`;
+  let t = 0;
+  return w.steps.map((s) => {
+    const at = hmm(t);
+    t += stepSeconds(s);
+    switch (s.kind) {
+      case 'warmup':
+      case 'cooldown':
+      case 'ramp':
+        return {
+          title: s.kind === 'warmup' ? 'Einfahren' : s.kind === 'cooldown' ? 'Ausfahren' : 'Rampe',
+          at,
+          duration: mmss(s.sec),
+          target: `${W(s.from)} → ${W(s.to)}`,
+          lines: [`${P(s.from)} → ${P(s.to)} FTP, locker steigern`],
+          f: Math.max(s.from, s.to),
+        };
+      case 'steady': {
+        const z = zoneOf(s.power);
+        return {
+          title: s.label ?? `Z${z.zone} ${z.name}`,
+          at,
+          duration: mmss(s.sec),
+          target: `${W(s.power)} · ${P(s.power)} FTP`,
+          lines: [`Zone ${z.zone} (${z.name}) gleichmäßig halten`],
+          f: s.power,
+        };
+      }
+      case 'intervals': {
+        const z = zoneOf(s.on);
+        return {
+          title: s.label ?? `${s.repeat} × ${mmss(s.onSec)} ${z.name}`,
+          at,
+          duration: mmss(s.repeat * (s.onSec + s.offSec)),
+          target: `${s.repeat} × ${mmss(s.onSec)} @ ${W(s.on)} / ${mmss(s.offSec)} @ ${W(s.off)}`,
+          lines: [`Belastung ${mmss(s.onSec)} @ ${W(s.on)} (${P(s.on)}, Z${z.zone})`, `Erholung ${mmss(s.offSec)} @ ${W(s.off)} (${P(s.off)})`],
+          f: s.on,
+        };
+      }
+    }
+  });
+}

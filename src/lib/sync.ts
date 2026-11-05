@@ -1,10 +1,11 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
-import { getKv, replaceTpEvents, saveActivities, saveWeights, setKv } from '@/db/repo';
+import { getKv, latestGarminWeight, loadSettings, replaceTpEvents, saveActivities, saveSettings, saveWeights, setKv } from '@/db/repo';
 import { isoDate } from '@/domain/dates';
 import { addDays } from '@/domain/pmc';
 import type { Settings } from '@/domain/types';
-import { fetchActivitiesRange, fetchWeights, getApiKey } from '@/lib/garmin';
+import { mergeGarminProfile } from '@/domain/profile-sync';
+import { fetchActivitiesRange, fetchProfile, fetchWeights, getApiKey } from '@/lib/garmin';
 import { fetchTpFeed } from '@/lib/trainingpeaks';
 
 export interface LoadSyncResult {
@@ -52,6 +53,15 @@ export async function syncLoad(db: SQLiteDatabase, s: Settings): Promise<LoadSyn
       await saveWeights(db, await fetchWeights(addDays(today, -90), today));
     } catch {
       // Gewicht ist optional (keine Waage verbunden) – kein Fehler anzeigen
+    }
+    // Profil (Gewicht, Größe, HF) aus Garmin übernehmen – Garmin hat Vorrang vor Handeingaben
+    try {
+      const { profile } = await fetchProfile().catch(() => ({ profile: null }));
+      const fresh = await loadSettings(db);
+      const merged = mergeGarminProfile(fresh, profile, await latestGarminWeight(db), new Date().toISOString());
+      await saveSettings(db, merged.settings);
+    } catch (e) {
+      errors.push(`Profil: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   return { tpEvents, activities, errors };

@@ -84,3 +84,9 @@ npx expo lint
 - [x] v2: Ernährungstracking mit Barcode-Scanner (Open Food Facts), eigene Mahlzeiten (MCI-Ersatz)
 - [ ] v3: Gym-Log (Oberkörper A/B), Rad-Daten über Apple Health / Strava
 - [ ] v4: Wochenplan in der App bearbeiten, Cloud-Sync (Supabase), Auswertungen
+
+## Lebensmitteldaten
+
+- `assets/data/bls.json`: Auszug aus dem **Bundeslebensmittelschlüssel (BLS) 4.0** – Max Rubner-Institut (2025), DOI 10.25826/Data20251217-134202-0, Lizenz CC BY 4.0. Übernommen über das npm-Paket `@thereforejs/foods` 0.0.3 (nicht vom MRI veröffentlicht); kcal nach LMIV-Faktoren berechnet, Salz = Natrium × 2,5. Neu erzeugen: `node scripts/build-bls.mjs <pfad>/package/dist/index.mjs`.
+- `assets/data/bls-micros.json`: Mikronährstoffe je BLS-Code (noch leer – kommen aus der Original-Excel `BLS_4_0_Daten_2025_DE.xlsx`).
+- Markenprodukte/Barcodes: Open Food Facts (ODbL), online.

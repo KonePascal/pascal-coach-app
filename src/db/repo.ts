@@ -561,14 +561,18 @@ export async function saveWeights(db: SQLiteDatabase, list: { date: string; kg: 
   });
 }
 
-/** Gewicht je Tag: Morgen-Check (manuell) hat Vorrang vor Garmin. */
+export async function latestGarminWeight(db: SQLiteDatabase): Promise<{ date: string; kg: number } | null> {
+  return db.getFirstAsync<{ date: string; kg: number }>('SELECT date, kg FROM weights ORDER BY date DESC LIMIT 1');
+}
+
+/** Gewicht je Tag: Garmin hat Vorrang; alte Handeinträge füllen nur Lücken. */
 export async function loadWeights(db: SQLiteDatabase, from: string): Promise<{ date: string; kg: number }[]> {
   const [g, c] = await Promise.all([
     db.getAllAsync<{ date: string; kg: number }>('SELECT date, kg FROM weights WHERE date >= ?', from),
     db.getAllAsync<{ date: string; kg: number }>('SELECT date, weight AS kg FROM checkins WHERE weight IS NOT NULL AND date >= ?', from),
   ]);
-  const m = new Map(g.map((x) => [x.date, x.kg]));
-  for (const x of c) m.set(x.date, x.kg);
+  const m = new Map(c.map((x) => [x.date, x.kg]));
+  for (const x of g) m.set(x.date, x.kg);
   return [...m.entries()].map(([date, kg]) => ({ date, kg })).sort((a, b) => a.date.localeCompare(b.date));
 }
 

@@ -361,6 +361,13 @@ export default function SettingsScreen() {
                   return `${(ftpV / kg).toFixed(2)} W/kg · Ziel 4,0 W/kg = ${Math.round(4 * kg)} W`;
                 })()}
               </ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                {s.garminProfile
+                  ? `⌚ Automatisch aus Garmin (${s.garminProfile.fields.join(', ') || 'keine Werte'})${
+                      s.garminProfile.weightDate ? ` · Waage ${s.garminProfile.weightDate.slice(8, 10)}.${s.garminProfile.weightDate.slice(5, 7)}.` : ''
+                    } · Stand ${new Date(s.garminProfile.at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}. Garmin überschreibt Handeingaben beim nächsten Sync – nur die FTP bleibt dein Testwert.`
+                  : '⌚ Sobald Garmin verbunden ist, kommen Gewicht, Größe und Puls-Zonen automatisch von dort.'}
+              </ThemedText>
 
               <ThemedText type="smallBold" themeColor="textSecondary" style={{ marginTop: 6 }}>
                 LEISTUNGSZONEN (aus FTP)

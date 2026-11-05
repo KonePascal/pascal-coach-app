@@ -6,7 +6,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Button, Card } from '@/components/ui';
 import { fmtHours } from '@/domain/readiness';
 import type { ResolvedWorkout } from '@/domain/resolve';
-import { describeSteps, profile, totalSeconds, workoutTss, type Workout } from '@/domain/workout';
+import { describeSteps, profile, totalSeconds, workoutBlocks, workoutTss, type Workout } from '@/domain/workout';
 import { shareZwo } from '@/lib/zwo-files';
 
 /** Farbe nach Leistungszone (Anteil FTP), angelehnt an Zwift. */
@@ -38,6 +38,36 @@ export function WorkoutProfile({ workout, height = 64 }: { workout: Workout; hei
           })}
         </Svg>
       ) : null}
+    </View>
+  );
+}
+
+/** Alle Blöcke eines Workouts untereinander: Farbe = Zone, Startzeit, Dauer, Watt, Hinweise. */
+export function WorkoutBlocks({ workout, ftp }: { workout: Workout; ftp: number }) {
+  const blocks = workoutBlocks(workout, ftp);
+  return (
+    <View style={{ gap: 8 }}>
+      {blocks.map((b, i) => (
+        <View key={i} style={{ flexDirection: 'row', gap: 10 }}>
+          <View style={{ width: 5, borderRadius: 3, backgroundColor: zoneColor(b.f) }} />
+          <View style={{ flex: 1, gap: 1 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+              <ThemedText type="smallBold">
+                {i + 1}. {b.title}
+              </ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                ab {b.at} · {b.duration}
+              </ThemedText>
+            </View>
+            <ThemedText type="small">{b.target}</ThemedText>
+            {b.lines.map((l) => (
+              <ThemedText key={l} type="small" themeColor="textSecondary" style={{ fontSize: 12 }}>
+                {l}
+              </ThemedText>
+            ))}
+          </View>
+        </View>
+      ))}
     </View>
   );
 }

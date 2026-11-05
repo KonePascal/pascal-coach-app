@@ -1,15 +1,17 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useCallback, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Rect } from 'react-native-svg';
 
+import { CheckinSheet } from '@/components/checkin-sheet';
+import { MacroBars } from '@/components/macro-bars';
 import { PMC_COLORS } from '@/components/pmc-chart';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Card, LIGHT_COLOR, LIGHT_EMOJI } from '@/components/ui';
-import { WorkoutProfile } from '@/components/workout-card';
+import { Button, Card, Check, LIGHT_COLOR, LIGHT_EMOJI } from '@/components/ui';
+import { WorkoutBlocks, WorkoutProfile } from '@/components/workout-card';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import {
   dayLog,
@@ -20,45 +22,34 @@ import {
   loadActivities,
   loadPlan,
   loadTpEvents,
+  logWorkout,
   takenOn,
   toggleTaken,
   workoutHistory,
   type StoredCheckIn,
 } from '@/db/repo';
 import { fromIso, isoDate, labelDate } from '@/domain/dates';
-import { plannedFor, sessionFor, type SessionToday } from '@/domain/plan';
-import { rampRate, weekStart } from '@/domain/plan-check';
-import { addDays } from '@/domain/pmc';
-import { evaluate, fmtHours } from '@/domain/readiness';
-import { resolveWorkout, type ResolvedWorkout } from '@/domain/resolve';
-import { GROUP_LABEL, isDue, nextOpenGroup, type Supplement } from '@/domain/supplements';
-import { tpToPlanned } from '@/domain/trainingpeaks';
-import type { Baselines, Light } from '@/domain/types';
-import { COMPLIANCE_COLOR, COMPLIANCE_LABEL, buildRate, buildWeek, type WeekSummary } from '@/domain/week';
-import { describeSteps, reduceWorkout, totalSeconds, workoutTss } from '@/domain/workout';
-import { usePmc } from '@/hooks/use-pmc';
-import { useDayTarget } from '@/hooks/use-day-target';
 import { sum, type Macros } from '@/domain/food';
+import type { StoredActivity } from '@/domain/load';
+import { DAY_TYPE_LABEL, plannedFor, sessionFor, upcoming, type SessionToday } from '@/domain/plan';
+import { weekStart } from '@/domain/plan-check';
+import { addDays } from '@/domain/pmc';
+import { evaluate, fmtHours, type Readiness } from '@/domain/readiness';
+import { resolveWorkout, type ResolvedWorkout } from '@/domain/resolve';
+import { GROUP_LABEL, grouped, isDue, type Supplement } from '@/domain/supplements';
+import { tpToPlanned } from '@/domain/trainingpeaks';
+import type { Baselines, Light, Settings } from '@/domain/types';
+import { COMPLIANCE_COLOR, COMPLIANCE_LABEL, buildWeek, type WeekSummary } from '@/domain/week';
+import { parseWorkoutText, reduceWorkout, toZwo, totalSeconds, workoutTss } from '@/domain/workout';
+import { useDayTarget } from '@/hooks/use-day-target';
+import { usePmc } from '@/hooks/use-pmc';
 import { useTheme } from '@/hooks/use-theme';
 import { syncMorning } from '@/lib/morning-sync';
+import { shareZwo } from '@/lib/zwo-files';
 
 const r0 = (n: number) => Math.round(n);
 const arrow = (d: number) => (d > 0.5 ? '↑' : d < -0.5 ? '↓' : '–');
 const hm = (min: number) => `${Math.floor(min / 60)}h ${String(Math.round(min % 60)).padStart(2, '0')}min`;
-
-interface StartData {
-  checkin: StoredCheckIn | null;
-  history: StoredCheckIn[];
-  workout: ResolvedWorkout | null;
-  week: WeekSummary;
-  supps: { due: number; taken: number };
-  dueList: Supplement[];
-  takenSet: Set<number>;
-  session: SessionToday;
-  tomorrowQ: boolean;
-  eaten: Macros;
-  baselines: Baselines;
-}
 
 function Chip({ ok, text }: { ok: Light; text: string }) {
   const bg = ok === 'green' ? '#79C72A22' : ok === 'yellow' ? '#F5C54233' : '#E5484D22';
@@ -128,25 +119,83 @@ function WeekBars({ week, mode, today }: { week: WeekSummary; mode: 'min' | 'tss
   );
 }
 
+
+interface StartData {
+  s: Settings;
+  checkin: StoredCheckIn | null;
+  history: StoredCheckIn[];
+  baselines: Baselines;
+  readiness: Readiness;
+  session: SessionToday;
+  /** Workout wie heute zu fahren (an die Ampel angepasst) */
+  shown: ResolvedWorkout | null;
+  original: ResolvedWorkout | null;
+  workoutNote?: string;
+  doneToday: StoredActivity[];
+  week: WeekSummary;
+  next: ReturnType<typeof upcoming>;
+  due: Supplement[];
+  taken: Set<number>;
+  eaten: Macros;
+}
+
+const HRV_STATUS: Record<string, string> = { BALANCED: 'ausgeglichen', UNBALANCED: 'unausgeglichen', LOW: 'niedrig', POOR: 'schlecht' };
+const hhmm = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '');
+
+function Section({ title, action, onAction }: { title: string; action?: string; onAction?: () => void }) {
+  return (
+    <View style={styles.sectionRow}>
+      <ThemedText type="smallBold" style={styles.section}>
+        {title}
+      </ThemedText>
+      {action ? (
+        <Pressable onPress={onAction} hitSlop={10}>
+          <ThemedText type="smallBold" style={{ color: '#3c87f7' }}>
+            {action}
+          </ThemedText>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+/** Ein Ampel-Marker (HRV / Ruhepuls / Schlaf) als Kachel. */
+function MarkerTile({ label, light, detail }: { label: string; light: Light; detail: string }) {
+  return (
+    <View style={[styles.marker, { borderColor: LIGHT_COLOR[light] + '88', backgroundColor: LIGHT_COLOR[light] + '14' }]}>
+      <ThemedText type="smallBold">
+        {LIGHT_EMOJI[light]} {label}
+      </ThemedText>
+      <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 12 }} numberOfLines={2}>
+        {detail}
+      </ThemedText>
+    </View>
+  );
+}
+
 export default function StartScreen() {
   const db = useSQLiteContext();
   const theme = useTheme();
   const { model, reload } = usePmc();
+  const { target, load: loadTarget } = useDayTarget();
   const [data, setData] = useState<StartData | null>(null);
   const [mode, setMode] = useState<'min' | 'tss'>('min');
   const [refreshing, setRefreshing] = useState(false);
-  const { target, load: loadTarget } = useDayTarget();
+  const [sync, setSync] = useState<{ status: string; message?: string }>({ status: 'idle' });
+  const [checkOpen, setCheckOpen] = useState(false);
+  const [showAllBlocks, setShowAllBlocks] = useState(false);
   const today = isoDate(new Date());
 
   const load = useCallback(async () => {
     const m = await reload();
     const s = m.settings;
+    const now = new Date();
     const monday = weekStart(today);
     void loadTarget(today);
     const [checkin, history, tp, acts, plan, library, wHistory, supps, taken, foodLog] = await Promise.all([
       getCheckin(db, today),
       getHistory(db, today),
-      loadTpEvents(db, monday, addDays(monday, 6)),
+      loadTpEvents(db, monday, addDays(today, 4)),
       loadActivities(db, monday, addDays(monday, 6)),
       loadPlan(db),
       listLibrary(db),
@@ -155,37 +204,65 @@ export default function StartScreen() {
       takenOn(db, today),
       dayLog(db, today),
     ]);
-    const tpToday = tp.filter((e) => e.date === today);
-    const planned = tpToPlanned(tpToday) ?? plannedFor(new Date(), plan);
-    const workout = resolveWorkout({ date: today, tp: tpToday, planned, library, history: wHistory, ftp: s.ftp });
+    const tpOn = (d: string) => tp.filter((e) => e.date === d);
+    const tpToday = tpToPlanned(tpOn(today));
     const baselines: Baselines = { ...s.baselines, hrvLow: checkin?.hrvBaselineLow ?? s.baselines.hrvLow };
-    const r = evaluate(checkin ?? { date: today, symptoms: false, alcohol: false }, history, baselines);
-    const session = sessionFor(new Date(), r, s.ftp, plan, tpToPlanned(tpToday));
-    const due = supps.filter((x) => isDue(x, new Date(), session, checkin));
-    const tomorrow = addDays(today, 1);
-    const tTp = tp.filter((e) => e.date === tomorrow);
-    const tPlanned = tpToPlanned(tTp) ?? plannedFor(fromIso(tomorrow), plan);
+    const readiness = evaluate(checkin ?? { date: today, symptoms: false, alcohol: false }, history, baselines);
+    const session = sessionFor(now, readiness, s.ftp, plan, tpToday);
+    const planned = tpToday ?? plannedFor(now, plan);
+    const original = resolveWorkout({ date: today, tp: tpOn(today), planned, library, history: wHistory, ftp: s.ftp });
+
+    // An die Ampel anpassen: rot → nichts, Q verschoben → Z2-Ersatz, gelb → letzter Satz weg
+    let shown = original;
+    let workoutNote: string | undefined;
+    const isQ = session.dayType === 'qa' || session.dayType === 'qb';
+    if (original && readiness.light === 'red' && session.adjusted) {
+      shown = null;
+    } else if (original && session.adjusted && session.dayType === 'z2' && planned.dayType.startsWith('q')) {
+      const z2 = parseWorkoutText('Z2 statt Q', '', 70, s.ftp);
+      shown = z2 ? { workout: z2, source: original.source, detail: 'Ersatz für die Q-Einheit' } : null;
+      workoutNote = 'Kein Reiz heute – Q verschieben (≥ 2 Tage Abstand zur nächsten).';
+    } else if (original && readiness.light === 'yellow' && isQ) {
+      shown = { ...original, workout: reduceWorkout(original.workout) };
+      workoutNote = 'Gelb: letzter Satz/letztes Intervall gestrichen, Watt halten.';
+    }
+
     setData({
+      s,
       checkin,
       history,
-      workout,
-      week: buildWeek({ monday, today, tp, activities: acts, ftp: s.ftp, gymTss: s.gymTss }),
-      supps: { due: due.length, taken: due.filter((x) => taken.has(x.id)).length },
-      eaten: sum(foodLog),
-      dueList: due,
-      takenSet: taken,
-      session,
-      tomorrowQ: tPlanned.dayType === 'qa' || tPlanned.dayType === 'qb',
       baselines,
+      readiness,
+      session,
+      shown,
+      original,
+      workoutNote,
+      doneToday: acts.filter((a) => a.date === today),
+      week: buildWeek({ monday, today, tp, activities: acts, ftp: s.ftp, gymTss: s.gymTss }),
+      next: upcoming(now, 3, plan, s.ftp, (d) => tpToPlanned(tpOn(isoDate(d)))),
+      due: supps.filter((x) => isDue(x, now, session, checkin)),
+      taken,
+      eaten: sum(foodLog),
     });
   }, [db, reload, today, loadTarget]);
+
+  // Original-Workout protokollieren → Grundlage für „wie letztes Mal“
+  const o = data?.original;
+  const logKey = o ? `${today}|${o.workout.name}|${o.source}` : '';
+  useEffect(() => {
+    if (!o || o.source === 'Vergangenheit' || !data) return;
+    void logWorkout(db, { date: today, dayType: data.session.dayType, name: o.workout.name, source: o.source, xml: toZwo(o.workout) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logKey]);
 
   const refresh = useCallback(
     async (force = false) => {
       setRefreshing(true);
       try {
         await load();
-        await syncMorning(db, force);
+        setSync({ status: 'syncing' });
+        const r = await syncMorning(db, force);
+        setSync({ status: r.status, message: r.message });
         await load();
       } finally {
         setRefreshing(false);
@@ -194,31 +271,33 @@ export default function StartScreen() {
     [db, load],
   );
 
-  // App öffnen = alles synchronisieren (Garmin-Nacht, TP-Plan, Verlauf)
+  // App öffnen = alles synchronisieren (Garmin-Nacht, TP-Plan, Verlauf, Gewicht)
   useFocusEffect(
     useCallback(() => {
       void refresh();
     }, [refresh]),
   );
 
-  const tickGroup = async (items: Supplement[]) => {
-    for (const it of items) await toggleTaken(db, today, it.id, true);
+  const setTaken = async (ids: number[], on: boolean) => {
+    for (const id of ids) await toggleTaken(db, today, id, on);
     await load();
   };
 
   const rows = model?.rows ?? [];
   const tRow = rows.find((r) => r.date === today);
   const yRow = rows.find((r) => r.date === addDays(today, -1));
-  const ramp = model ? rampRate(rows, today) : null;
-  const rate = buildRate(ramp);
   const c = data?.checkin;
-  const readiness = c && data ? evaluate(c, data.history, data.baselines) : null;
   const avg7 = (k: 'rhr' | 'sleepHours') => {
     const v = (data?.history ?? []).slice(0, 7).map((h) => h[k]).filter((x): x is number => typeof x === 'number');
     return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
   };
   const sleepAvg = avg7('sleepHours');
   const rhrAvg = avg7('rhr');
+  const ftp = data?.s.ftp ?? 289;
+
+  const markers = data?.readiness.markers ?? [];
+  const main = (['hrv', 'rhr', 'sleep'] as const).map((k) => markers.find((m) => m.key === k));
+  const extra = markers.filter((m) => m.key === 'symptoms' || m.key === 'alcohol');
 
   return (
     <ThemedView style={styles.container}>
@@ -226,112 +305,58 @@ export default function StartScreen() {
         <ScrollView
           contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh(true)} />}>
-          <View>
-            <ThemedText type="small" themeColor="textSecondary">
-              {labelDate(new Date())}
-            </ThemedText>
-            <ThemedText type="subtitle">Hallo Pascal</ThemedText>
+          <View style={styles.between}>
+            <View>
+              <ThemedText type="small" themeColor="textSecondary">
+                {labelDate(new Date())}
+              </ThemedText>
+              <ThemedText type="subtitle">Hallo Pascal</ThemedText>
+            </View>
+            <Pressable onPress={() => void refresh(true)} hitSlop={10} style={{ alignItems: 'flex-end' }}>
+              <ThemedText type="small" themeColor="textSecondary">
+                ⌚ {sync.status === 'syncing' ? 'lädt …' : sync.status === 'nokey' ? 'Garmin nicht verbunden' : c?.syncedAt ? `Garmin ${hhmm(c.syncedAt)}` : 'Garmin'}
+              </ThemedText>
+              <ThemedText type="small" style={{ color: '#3c87f7' }}>
+                neu laden
+              </ThemedText>
+            </Pressable>
           </View>
+          {sync.status === 'error' && sync.message ? (
+            <ThemedText type="small" style={{ color: LIGHT_COLOR.red }}>
+              {sync.message}
+            </ThemedText>
+          ) : null}
 
-          {/* Dein Tag – alles Wichtige auf einen Blick */}
+          {/* 1 · Ampel */}
           {data ? (
-            <Card style={{ borderLeftWidth: 6, borderLeftColor: readiness ? LIGHT_COLOR[readiness.light] : '#8885', gap: 10 }}>
-              <Pressable onPress={() => router.navigate('/heute')}>
-                <ThemedText type="smallBold" style={{ fontSize: 16 }}>
-                  {readiness ? `${LIGHT_EMOJI[readiness.light]} ${readiness.headline}` : '☀️ Noch keine Nachtwerte – Uhr synchronisieren oder Morgen-Check'}
+            <Card style={{ borderLeftWidth: 6, borderLeftColor: c ? LIGHT_COLOR[data.readiness.light] : '#8885', gap: 10 }}>
+              <ThemedText type="smallBold" style={{ fontSize: 16 }}>
+                {c ? `${LIGHT_EMOJI[data.readiness.light]} ${data.readiness.headline}` : '☀️ Noch keine Nachtwerte – Uhr synchronisieren oder Morgen-Check'}
+              </ThemedText>
+              <View style={styles.markers}>
+                {main.map((m, i) =>
+                  m ? (
+                    <MarkerTile key={m.key} label={m.label} light={m.light} detail={m.detail} />
+                  ) : (
+                    <MarkerTile key={i} label={['HRV', 'Ruhepuls', 'Schlaf'][i]} light="yellow" detail="kein Wert" />
+                  ),
+                )}
+              </View>
+              {extra.map((m) => (
+                <ThemedText key={m.key} type="small" style={{ color: LIGHT_COLOR[m.light] }}>
+                  {LIGHT_EMOJI[m.light]} {m.label}: {m.detail}
+                </ThemedText>
+              ))}
+              <Pressable onPress={() => setCheckOpen(true)}>
+                <ThemedText type="smallBold" style={{ color: '#3c87f7' }}>
+                  {c ? 'Morgen-Check: Infekt / Alkohol / Werte ändern ›' : 'Morgen-Check ausfüllen ›'}
                 </ThemedText>
               </Pressable>
-
-              <Pressable onPress={() => router.navigate('/heute')} style={styles.dayRow}>
-                <ThemedText style={styles.dayIcon}>🚴</ThemedText>
-                <View style={{ flex: 1 }}>
-                  <ThemedText type="smallBold">
-                    {data.session.durationMin ? `${data.session.title} · ${fmtHours(data.session.durationMin / 60)}` : data.session.title}
-                  </ThemedText>
-                  {(() => {
-                    const w = data.workout?.workout;
-                    if (!w || data.session.dayType === 'rest') return null;
-                    const ww = readiness?.light === 'yellow' && (data.session.dayType === 'qa' || data.session.dayType === 'qb') ? reduceWorkout(w) : w;
-                    const key = describeSteps(ww, model?.settings.ftp ?? 289).find((l) => /×/.test(l)) ?? describeSteps(ww, model?.settings.ftp ?? 289)[1];
-                    return key ? (
-                      <ThemedText type="small" themeColor="textSecondary">
-                        {key}
-                      </ThemedText>
-                    ) : null;
-                  })()}
-                  {data.session.adjustNote ? (
-                    <ThemedText type="small" style={{ color: LIGHT_COLOR.yellow }}>
-                      ↳ {data.session.adjustNote}
-                    </ThemedText>
-                  ) : null}
-                </View>
-              </Pressable>
-
-              {data.session.caffeine ? (
-                <View style={styles.dayRow}>
-                  <ThemedText style={styles.dayIcon}>☕</ThemedText>
-                  <ThemedText type="small" style={{ flex: 1 }}>
-                    300–400 mg Koffein 45–60 min vor dem Start (nicht nach 14 Uhr)
-                  </ThemedText>
-                </View>
-              ) : null}
-
-              {target ? (
-                <Pressable onPress={() => router.navigate('/ernaehrung')} style={styles.dayRow}>
-                  <ThemedText style={styles.dayIcon}>🍽️</ThemedText>
-                  <ThemedText type="small" style={{ flex: 1 }}>
-                    <ThemedText type="smallBold">{Math.max(0, target.kcal - data.eaten.kcal)} kcal</ThemedText> übrig · KH{' '}
-                    {Math.max(0, Math.round(target.carbsG - data.eaten.carbs))} g · Protein {Math.max(0, Math.round(target.proteinG - data.eaten.protein))} g
-                    {data.session.durationMin >= 90 ? ' · unterwegs 60–80 g KH/h' : ''}
-                  </ThemedText>
-                  <ThemedText type="small" style={{ color: '#3c87f7' }}>
-                    ＋
-                  </ThemedText>
-                </Pressable>
-              ) : null}
-
-              {(() => {
-                const next = nextOpenGroup(data.dueList, data.takenSet, new Date());
-                if (!next) {
-                  return data.dueList.length ? (
-                    <View style={styles.dayRow}>
-                      <ThemedText style={styles.dayIcon}>💊</ThemedText>
-                      <ThemedText type="small" style={{ color: LIGHT_COLOR.green }}>
-                        Alle Supplements erledigt
-                      </ThemedText>
-                    </View>
-                  ) : null;
-                }
-                return (
-                  <View style={styles.dayRow}>
-                    <ThemedText style={styles.dayIcon}>💊</ThemedText>
-                    <ThemedText type="small" style={{ flex: 1 }}>
-                      {GROUP_LABEL[next.group].replace(/^\S+\s/, '')}: {next.items.map((i) => i.name).join(', ')}
-                    </ThemedText>
-                    <Pressable onPress={() => void tickGroup(next.items)} style={styles.doneBtn}>
-                      <ThemedText type="smallBold" style={{ color: '#fff' }}>
-                        ✓
-                      </ThemedText>
-                    </Pressable>
-                  </View>
-                );
-              })()}
-
-              {data.tomorrowQ ? (
-                <View style={styles.dayRow}>
-                  <ThemedText style={styles.dayIcon}>😴</ThemedText>
-                  <ThemedText type="small" style={{ flex: 1 }}>
-                    Morgen Q-Einheit: früh & leicht essen, Bettzeit 22:00
-                  </ThemedText>
-                </View>
-              ) : null}
             </Card>
           ) : null}
 
-          {/* Leistungseinblicke */}
-          <ThemedText type="smallBold" style={styles.section}>
-            Leistungseinblicke
-          </ThemedText>
+          {/* 2 · Leistungseinblicke */}
+          <Section title="Leistungseinblicke" action="Analysen ›" onAction={() => router.navigate({ pathname: '/analysen', params: { seg: 'form' } })} />
           {tRow ? (
             <View style={styles.metrics}>
               <MetricTile k="ctl" label="Fitness" value={tRow.ctl} delta={tRow.ctl - (yRow?.ctl ?? tRow.ctl)} color={PMC_COLORS.ctl} />
@@ -339,140 +364,238 @@ export default function StartScreen() {
               <MetricTile k="atl" label="Ermüdung" value={tRow.atl} delta={tRow.atl - (yRow?.atl ?? tRow.atl)} color="#E0368C" />
             </View>
           ) : null}
-          <Pressable onPress={() => router.navigate({ pathname: '/kennzahl/[key]', params: { key: 'ctl' } })}>
-            <Card>
-              <ThemedText type="small" style={{ color: PMC_COLORS.ctl }}>
-                Fitness-Aufbau-Tempo {ramp !== null ? `· ${ramp >= 0 ? '+' : ''}${ramp.toFixed(1)} CTL/7 T.` : ''}
-              </ThemedText>
-              <ThemedText type="subtitle" style={{ fontSize: 26, lineHeight: 32, color: PMC_COLORS.ctl }}>
-                {rate.label}
-              </ThemedText>
-              <View style={styles.rateBar}>
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <View key={i} style={{ flex: 1, gap: 4, alignItems: 'center' }}>
-                    <ThemedText style={{ height: 14, fontSize: 12, color: PMC_COLORS.ctl }}>{rate.index === i ? '▼' : ' '}</ThemedText>
-                    <View style={{ height: 6, alignSelf: 'stretch', borderRadius: 3, backgroundColor: PMC_COLORS.ctl, opacity: 0.3 + i * 0.17 }} />
-                  </View>
-                ))}
-              </View>
-              <View style={styles.between}>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Erholung
-                </ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Zu stark
-                </ThemedText>
-              </View>
-            </Card>
-          </Pressable>
 
-          <Pressable onPress={() => router.navigate('/analysen')}>
+          {/* 3 · Erholungseinblicke */}
+          <Section title="Erholungseinblicke" action="Verlauf ›" onAction={() => router.navigate({ pathname: '/analysen', params: { seg: 'erholung' } })} />
+          {data ? (
             <Card>
-              <View style={styles.between}>
-                <ThemedText type="smallBold">📈 Analysen</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Leistungskurve · Zonen · Effizienz · Gewicht ›
-                </ThemedText>
-              </View>
-            </Card>
-          </Pressable>
-
-          {/* Erholungseinblicke */}
-          <ThemedText type="smallBold" style={styles.section}>
-            Erholungseinblicke
-          </ThemedText>
-          <Card>
-            <View style={styles.recRow}>
-              <View>
-                <ThemedText type="smallBold">HRV</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Garmin {c?.hrvStatus ? `· ${c.hrvStatus.toLowerCase()}` : ''}
-                </ThemedText>
-              </View>
-              <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                <ThemedText style={styles.recVal}>{c?.hrv != null ? `${r0(c.hrv)} ms` : '–'}</ThemedText>
-                {c?.hrv != null ? (
-                  <Chip
-                    ok={c.hrv >= data!.baselines.hrvLow ? 'green' : c.hrv >= data!.baselines.hrvLow - 10 ? 'yellow' : 'red'}
-                    text={`ab ${r0(data!.baselines.hrvLow)} ms`}
-                  />
-                ) : null}
-              </View>
-            </View>
-            <View style={styles.recRow}>
-              <View>
-                <ThemedText type="smallBold">Ruhepuls</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Ø 7 T. {rhrAvg ? r0(rhrAvg) : '–'}
-                </ThemedText>
-              </View>
-              <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                <ThemedText style={styles.recVal}>{c?.rhr != null ? `${r0(c.rhr)} bpm` : '–'}</ThemedText>
-                {c?.rhr != null ? (
-                  <Chip
-                    ok={c.rhr <= data!.baselines.rhrHigh ? 'green' : c.rhr <= data!.baselines.rhrHigh + 4 ? 'yellow' : 'red'}
-                    text={`bis ${data!.baselines.rhrHigh} bpm`}
-                  />
-                ) : null}
-              </View>
-            </View>
-            <View style={styles.recRow}>
-              <View>
-                <ThemedText type="smallBold">Schlaf</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Ø 7 T. {sleepAvg ? fmtHours(sleepAvg) : '–'}
-                  {c?.sleepScore != null ? ` · Score ${r0(c.sleepScore)}` : ''}
-                </ThemedText>
-              </View>
-              <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                <ThemedText style={styles.recVal}>{c?.sleepHours != null ? fmtHours(c.sleepHours) : '–'}</ThemedText>
-                {c?.sleepHours != null ? (
-                  <Chip
-                    ok={c.sleepHours >= data!.baselines.sleepHoursTarget ? 'green' : c.sleepHours >= data!.baselines.sleepHoursTarget - 1 ? 'yellow' : 'red'}
-                    text={`Ziel ${fmtHours(data!.baselines.sleepHoursTarget)}`}
-                  />
-                ) : null}
-              </View>
-            </View>
-            {c?.bodyBattery != null ? (
-              <ThemedText type="small" themeColor="textSecondary">
-                Body Battery {r0(c.bodyBattery)}
-              </ThemedText>
-            ) : null}
-          </Card>
-
-          {/* Heutiges Training */}
-          <ThemedText type="smallBold" style={styles.section}>
-            Heutiges Training
-          </ThemedText>
-          <Pressable onPress={() => router.navigate('/heute')}>
-            <Card>
-              {data?.workout ? (
-                <>
-                  <ThemedText type="smallBold" style={{ fontSize: 16 }}>
-                    🚴 {data.workout.workout.name}
+              <View style={styles.recRow}>
+                <View>
+                  <ThemedText type="smallBold">HRV</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Garmin{c?.hrvStatus ? ` · ${HRV_STATUS[c.hrvStatus] ?? c.hrvStatus.toLowerCase()}` : ''}
                   </ThemedText>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                  <ThemedText style={styles.recVal}>{c?.hrv != null ? `${r0(c.hrv)} ms` : '–'}</ThemedText>
+                  {c?.hrv != null ? (
+                    <Chip
+                      ok={c.hrv >= data.baselines.hrvLow ? 'green' : c.hrv >= data.baselines.hrvLow - 10 ? 'yellow' : 'red'}
+                      text={`ab ${r0(data.baselines.hrvLow)} ms`}
+                    />
+                  ) : null}
+                </View>
+              </View>
+              <View style={styles.recRow}>
+                <View>
+                  <ThemedText type="smallBold">Ruhepuls</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Ø 7 T. {rhrAvg ? r0(rhrAvg) : '–'}
+                  </ThemedText>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                  <ThemedText style={styles.recVal}>{c?.rhr != null ? `${r0(c.rhr)} bpm` : '–'}</ThemedText>
+                  {c?.rhr != null ? (
+                    <Chip
+                      ok={c.rhr <= data.baselines.rhrHigh ? 'green' : c.rhr <= data.baselines.rhrHigh + 4 ? 'yellow' : 'red'}
+                      text={`bis ${data.baselines.rhrHigh} bpm`}
+                    />
+                  ) : null}
+                </View>
+              </View>
+              <View style={[styles.recRow, { borderBottomWidth: 0 }]}>
+                <View>
+                  <ThemedText type="smallBold">Schlaf</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Ø 7 T. {sleepAvg ? fmtHours(sleepAvg) : '–'}
+                    {c?.sleepScore != null ? ` · Score ${r0(c.sleepScore)}` : ''}
+                  </ThemedText>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                  <ThemedText style={styles.recVal}>{c?.sleepHours != null ? fmtHours(c.sleepHours) : '–'}</ThemedText>
+                  {c?.sleepHours != null ? (
+                    <Chip
+                      ok={c.sleepHours >= data.baselines.sleepHoursTarget ? 'green' : c.sleepHours >= data.baselines.sleepHoursTarget - 1 ? 'yellow' : 'red'}
+                      text={`Ziel ${fmtHours(data.baselines.sleepHoursTarget)}`}
+                    />
+                  ) : null}
+                </View>
+              </View>
+              {c?.bodyBattery != null ? (
+                <ThemedText type="small" themeColor="textSecondary">
+                  Body Battery {r0(c.bodyBattery)}
+                </ThemedText>
+              ) : null}
+            </Card>
+          ) : null}
+
+          {/* 4 · Heutiges Training */}
+          <Section title="Heutiges Training" action="Woche ›" onAction={() => router.navigate('/woche')} />
+          {data ? (
+            <Card style={{ gap: 10 }}>
+              <ThemedText type="smallBold" style={{ fontSize: 17 }}>
+                {data.shown ? `🚴 ${data.shown.workout.name}` : data.session.title}
+              </ThemedText>
+              {data.shown ? (
+                <>
                   <View style={styles.between}>
-                    <ThemedText style={{ fontSize: 22, fontWeight: '700' }}>{fmtHours(totalSeconds(data.workout.workout) / 3600)}</ThemedText>
-                    <ThemedText style={{ fontSize: 22, fontWeight: '700' }}>
-                      {workoutTss(data.workout.workout)} <ThemedText type="small">TSS</ThemedText>
+                    <ThemedText style={styles.big}>{fmtHours(totalSeconds(data.shown.workout) / 3600)}</ThemedText>
+                    <ThemedText style={styles.big}>
+                      {workoutTss(data.shown.workout)} <ThemedText type="small">TSS</ThemedText>
                     </ThemedText>
                   </View>
-                  <WorkoutProfile workout={data.workout.workout} height={56} />
                   <ThemedText type="small" themeColor="textSecondary">
-                    {data.workout.source} · tippen für Watt, Anpassung & ZWO ›
+                    {data.shown.source} · {data.shown.detail} · FTP {ftp} W
                   </ThemedText>
                 </>
               ) : (
-                <ThemedText type="small">Heute kein Rad geplant – Erholung. 🙌</ThemedText>
+                <ThemedText type="small">{data.session.details || 'Heute kein Rad – Erholung. 🙌'}</ThemedText>
               )}
+              {data.workoutNote || data.session.adjustNote ? (
+                <ThemedText type="small" style={{ color: LIGHT_COLOR[data.readiness.light === 'green' ? 'yellow' : data.readiness.light] }}>
+                  ↳ {data.workoutNote ?? data.session.adjustNote}
+                </ThemedText>
+              ) : null}
+              {data.shown ? (
+                <>
+                  <WorkoutProfile workout={data.shown.workout} height={60} />
+                  {(() => {
+                    const w = data.shown!.workout;
+                    const many = w.steps.length > 6 && !showAllBlocks;
+                    const view = many ? { ...w, steps: w.steps.slice(0, 6) } : w;
+                    return (
+                      <>
+                        <WorkoutBlocks workout={view} ftp={ftp} />
+                        {w.steps.length > 6 ? (
+                          <Pressable onPress={() => setShowAllBlocks((v) => !v)}>
+                            <ThemedText type="small" style={{ color: '#3c87f7' }}>
+                              {showAllBlocks ? 'weniger Blöcke' : `alle ${w.steps.length} Blöcke zeigen`}
+                            </ThemedText>
+                          </Pressable>
+                        ) : null}
+                      </>
+                    );
+                  })()}
+                </>
+              ) : null}
+              {data.session.gym ? (
+                <ThemedText type="small">🏋️ Danach Gym: {data.session.gym}</ThemedText>
+              ) : null}
+              {data.session.caffeine ? <ThemedText type="small">☕ 300–400 mg Koffein 45–60 min vor dem Start (nicht nach 14 Uhr)</ThemedText> : null}
+              {data.session.durationMin >= 90 ? <ThemedText type="small">🍌 Unterwegs 60–80 g KH pro Stunde, ab der ersten halben Stunde</ThemedText> : null}
+              {data.shown ? (
+                <Button
+                  title="⬇︎ ZWO teilen (Zwift / TrainingPeaks)"
+                  variant="secondary"
+                  onPress={() =>
+                    void shareZwo(data.shown!.workout, today).catch((e) => Alert.alert('Teilen fehlgeschlagen', e instanceof Error ? e.message : String(e)))
+                  }
+                />
+              ) : null}
+              {data.doneToday.length ? (
+                <View style={{ gap: 2, borderTopWidth: StyleSheet.hairlineWidth, borderColor: '#8885', paddingTop: 8 }}>
+                  <ThemedText type="smallBold" style={{ color: LIGHT_COLOR.green }}>
+                    ✓ Erledigt (Garmin)
+                  </ThemedText>
+                  {data.doneToday.map((a) => (
+                    <ThemedText key={a.id} type="small" themeColor="textSecondary">
+                      {a.start ? `${a.start.slice(11, 16)} ` : ''}
+                      {a.name ?? a.type} ·{' '}
+                      {[fmtHours(a.durationMin / 60), a.np != null && `NP ${r0(a.np)} W`, a.tss != null && `${r0(a.tss)} TSS`, a.calories != null && `${r0(a.calories)} kcal`]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </ThemedText>
+                  ))}
+                </View>
+              ) : null}
             </Card>
-          </Pressable>
+          ) : null}
 
-          {/* Wochen-Snapshot */}
-          <ThemedText type="smallBold" style={styles.section}>
-            Diese Woche
-          </ThemedText>
+          {/* 5 · Tagesablauf (Supplements nach Uhrzeit) */}
+          {data && data.due.length ? (
+            <>
+              <Section title={`Tagesablauf · ${data.due.filter((x) => data.taken.has(x.id)).length}/${data.due.length}`} />
+              <Card>
+                {grouped(data.due).map((g, gi) => {
+                  const open = g.items.filter((x) => !data.taken.has(x.id));
+                  return (
+                    <View key={g.group} style={[{ gap: 2 }, gi > 0 && styles.groupSep]}>
+                      <View style={styles.between}>
+                        <ThemedText type="smallBold">
+                          {g.items[0].time} · {GROUP_LABEL[g.group]}
+                        </ThemedText>
+                        {open.length ? (
+                          <Pressable onPress={() => void setTaken(open.map((x) => x.id), true)} hitSlop={8}>
+                            <ThemedText type="smallBold" style={{ color: '#2DB55D' }}>
+                              alle ✓
+                            </ThemedText>
+                          </Pressable>
+                        ) : (
+                          <ThemedText type="small" style={{ color: '#2DB55D' }}>
+                            erledigt
+                          </ThemedText>
+                        )}
+                      </View>
+                      {g.items.map((x) => (
+                        <Check
+                          key={x.id}
+                          checked={data.taken.has(x.id)}
+                          label={x.name}
+                          sub={x.dose}
+                          onPress={() => void setTaken([x.id], !data.taken.has(x.id))}
+                        />
+                      ))}
+                    </View>
+                  );
+                })}
+              </Card>
+            </>
+          ) : null}
+
+          {/* 6 · Ernährung */}
+          <Section title="Ernährung" action="Eintragen ›" onAction={() => router.navigate('/ernaehrung')} />
+          {data && target ? (
+            <Pressable onPress={() => router.navigate('/ernaehrung')}>
+              <Card>
+                <MacroBars eaten={data.eaten} target={target.macros} />
+                {target.notes.slice(0, 2).map((n) => (
+                  <ThemedText key={n} type="small" themeColor="textSecondary">
+                    • {n}
+                  </ThemedText>
+                ))}
+              </Card>
+            </Pressable>
+          ) : null}
+
+          {/* 7 · Ausblick */}
+          <Section title="Ausblick" action="Woche ›" onAction={() => router.navigate('/woche')} />
+          {data ? (
+            <Card>
+              {data.next.map((d) => (
+                <View key={d.date.toISOString()} style={styles.nextRow}>
+                  <ThemedText type="smallBold" style={{ width: 92 }}>
+                    {labelDate(d.date).split(',')[0]}
+                  </ThemedText>
+                  <View style={{ flex: 1 }}>
+                    <ThemedText type="small">
+                      {d.title}
+                      {d.caffeine ? ' ☕' : ''}
+                    </ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 12 }}>
+                      {d.durationMin > 0
+                        ? `${DAY_TYPE_LABEL[d.dayType]} · ${fmtHours(d.durationMin / 60)} · ~${d.tss} TSS${d.gym ? ` · Gym ${d.gym}` : ''}`
+                        : 'Frei'}
+                    </ThemedText>
+                  </View>
+                </View>
+              ))}
+              {data.next[0] && (data.next[0].dayType === 'qa' || data.next[0].dayType === 'qb') ? (
+                <ThemedText type="small" style={{ color: '#3c87f7' }}>
+                  😴 Morgen Q-Einheit: früh & leicht essen, Bettzeit 22:00
+                </ThemedText>
+              ) : null}
+            </Card>
+          ) : null}
           {data ? (
             <Pressable onPress={() => router.navigate('/woche')}>
               <Card>
@@ -487,26 +610,19 @@ export default function StartScreen() {
                 </View>
                 <View style={styles.between}>
                   <View>
-                    <ThemedText style={{ fontSize: 20, fontWeight: '700' }}>
-                      {mode === 'min' ? hm(data.week.actualMin) : r0(data.week.actualTss)}
-                    </ThemedText>
+                    <ThemedText style={{ fontSize: 20, fontWeight: '700' }}>{mode === 'min' ? hm(data.week.actualMin) : r0(data.week.actualTss)}</ThemedText>
                     <ThemedText type="small" themeColor="textSecondary">
-                      ● Abgeschlossen
+                      ● Diese Woche erledigt
                     </ThemedText>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <ThemedText style={{ fontSize: 20, fontWeight: '700' }}>
-                      {mode === 'min' ? hm(data.week.plannedMin) : r0(data.week.plannedTss)}
-                    </ThemedText>
+                    <ThemedText style={{ fontSize: 20, fontWeight: '700' }}>{mode === 'min' ? hm(data.week.plannedMin) : r0(data.week.plannedTss)}</ThemedText>
                     <ThemedText type="small" themeColor="textSecondary">
                       ○ Geplant
                     </ThemedText>
                   </View>
                 </View>
                 <WeekBars week={data.week} mode={mode} today={today} />
-                <ThemedText type="smallBold" style={{ marginTop: 6 }}>
-                  Umsetzung
-                </ThemedText>
                 <View style={styles.compl}>
                   {(['full', 'partial', 'off', 'missed', 'unplanned'] as const).map((k) => (
                     <View key={k} style={styles.complItem}>
@@ -520,27 +636,22 @@ export default function StartScreen() {
               </Card>
             </Pressable>
           ) : null}
-
-          {/* Ernährung kurz */}
-          {data && target ? (
-            <Pressable onPress={() => router.navigate('/ernaehrung')}>
-              <Card>
-                <View style={styles.between}>
-                  <ThemedText type="smallBold">🍽️ Ernährung</ThemedText>
-                  <ThemedText type="smallBold" style={{ color: target.kcal - data.eaten.kcal < 0 ? LIGHT_COLOR.red : '#3c87f7' }}>
-                    {Math.abs(target.kcal - data.eaten.kcal)} kcal {target.kcal - data.eaten.kcal < 0 ? 'drüber' : 'übrig'}
-                  </ThemedText>
-                </View>
-                <ThemedText type="small" themeColor="textSecondary">
-                  KH {Math.round(data.eaten.carbs)}/{target.carbsG} g · Protein {Math.round(data.eaten.protein)}/{target.proteinG} g · Fett{' '}
-                  {Math.round(data.eaten.fat)}/{target.fatG} g · tippen zum Eintragen ›
-                </ThemedText>
-              </Card>
-            </Pressable>
-          ) : null}
-
         </ScrollView>
       </SafeAreaView>
+
+      {data ? (
+        <CheckinSheet
+          visible={checkOpen}
+          date={today}
+          stored={data.checkin}
+          history={data.history}
+          baselines={data.baselines}
+          onClose={(saved) => {
+            setCheckOpen(false);
+            if (saved) void load();
+          }}
+        />
+      ) : null}
     </ThemedView>
   );
 }
@@ -549,7 +660,13 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   safe: { flex: 1, width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center' },
   scroll: { padding: Spacing.three, gap: Spacing.three, paddingBottom: BottomTabInset + Spacing.five },
-  section: { fontSize: 20, lineHeight: 26, marginTop: Spacing.two },
+  section: { fontSize: 20, lineHeight: 26 },
+  sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginTop: Spacing.two },
+  markers: { flexDirection: 'row', gap: Spacing.two },
+  marker: { flex: 1, borderWidth: 1, borderRadius: 12, padding: 8, gap: 2 },
+  big: { fontSize: 22, fontWeight: '700' },
+  groupSep: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: '#8885', paddingTop: 8, marginTop: 6 },
+  nextRow: { flexDirection: 'row', gap: 8, paddingVertical: 5 },
   metrics: { flexDirection: 'row', gap: Spacing.two },
   metric: { flex: 1, borderWidth: 1.5, borderRadius: 14, padding: Spacing.three },
   rateBar: { flexDirection: 'row', gap: 4, marginTop: 4 },

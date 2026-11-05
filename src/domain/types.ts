@@ -42,6 +42,8 @@ export interface Settings {
   lthr: number; // Schwellenpuls
   maxHr: number;
   hrFloors: number[]; // Untergrenzen HF-Zonen Z2…Z5
+  /** Was zuletzt automatisch aus Garmin übernommen wurde (für die Anzeige in „Mehr“). */
+  garminProfile?: { at: string; weightDate: string | null; fields: string[] };
   weightGoal: { startDate: string; startKg: number; date: string; kg: number };
 }
 
