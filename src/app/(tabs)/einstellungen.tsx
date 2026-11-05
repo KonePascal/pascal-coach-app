@@ -79,6 +79,8 @@ export default function SettingsScreen() {
       sleepRed: String(st.baselines.sleepRed),
       sleepHoursTarget: String(st.baselines.sleepHoursTarget),
       seedDate: st.pmcSeed.date,
+      goalKg: String(st.weightGoal.kg),
+      goalDate: st.weightGoal.date,
       seedCtl: String(st.pmcSeed.ctl),
       seedAtl: String(st.pmcSeed.atl),
       gymTss: String(st.gymTss),
@@ -237,6 +239,11 @@ export default function SettingsScreen() {
         atl: n('seedAtl', s.pmcSeed.atl),
       },
       gymTss: n('gymTss', s.gymTss),
+      weightGoal: {
+        ...s.weightGoal,
+        kg: n('goalKg', s.weightGoal.kg),
+        date: /^\d{4}-\d{2}-\d{2}$/.test(num.goalDate ?? '') ? (num.goalDate as string) : s.weightGoal.date,
+      },
       tsbLimit: n('tsbLimit', s.tsbLimit),
     };
     if (next.remindersOn && !(await ensurePermission())) {
@@ -381,6 +388,18 @@ export default function SettingsScreen() {
                 </View>
               ))}
 
+              <ThemedText type="smallBold" themeColor="textSecondary" style={{ marginTop: 6 }}>
+                GEWICHTSZIEL
+              </ThemedText>
+              <View style={styles.grid}>
+                {field('goalKg', 'Zielgewicht', 'kg')}
+                <NumberField
+                  label="bis (JJJJ-MM-TT)"
+                  keyboard="numbers-and-punctuation"
+                  value={num.goalDate ?? ''}
+                  onChange={(v) => setNum((p) => ({ ...p, goalDate: v }))}
+                />
+              </View>
               {profileInfo ? <ThemedText type="small">{profileInfo}</ThemedText> : null}
               {hasKey ? <Button title="Aus Garmin übernehmen" variant="secondary" onPress={() => void pullGarminProfile()} /> : null}
               <ThemedText type="small" themeColor="textSecondary">

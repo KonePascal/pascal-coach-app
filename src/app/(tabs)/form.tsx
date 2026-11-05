@@ -1,4 +1,4 @@
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from 'react-native';
@@ -171,7 +171,14 @@ export default function FormScreen() {
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
           refreshControl={<RefreshControl refreshing={syncing} onRefresh={() => void sync()} />}>
-          <ThemedText type="subtitle">Form</ThemedText>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <ThemedText type="subtitle">Form</ThemedText>
+            <Pressable onPress={() => router.push('/analyse')}>
+              <ThemedText type="smallBold" style={{ color: '#3c87f7' }}>
+                Analysen ›
+              </ThemedText>
+            </Pressable>
+          </View>
 
           <View style={styles.tiles}>
             <Tile label="Fitness (CTL)" value={String(r0(todayRow.ctl))} color={PMC_COLORS.ctl} />

@@ -42,6 +42,7 @@ export interface Settings {
   lthr: number; // Schwellenpuls
   maxHr: number;
   hrFloors: number[]; // Untergrenzen HF-Zonen Z2…Z5
+  weightGoal: { startDate: string; startKg: number; date: string; kg: number };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -69,4 +70,5 @@ export const DEFAULT_SETTINGS: Settings = {
   lthr: 172,
   maxHr: 188,
   hrFloors: [140, 154, 161, 171],
+  weightGoal: { startDate: '2026-10-26', startKg: 82.5, date: '2027-01-31', kg: 79.5 }, // Masterplan: −3 kg bis Ende Januar
 };

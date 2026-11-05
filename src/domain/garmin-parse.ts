@@ -145,7 +145,27 @@ export interface GarminActivity {
   avgPower: number | null;
   normPower: number | null;
   tss: number | null;
+  avgHr?: number | null;
+  distanceKm?: number | null;
+  elevationM?: number | null;
+  /** Bestwerte je Dauer in Sekunden → Watt (Garmin maxAvgPower_N) */
+  peaks?: Record<number, number>;
+  /** Sekunden je Leistungszone Z1…Z7 bzw. HF-Zone Z1…Z5 (Garmin TimeInZone) */
+  powerZonesSec?: number[];
+  hrZonesSec?: number[];
 }
+
+function collect(a: Record<string, Json>, re: RegExp): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const [k, v] of Object.entries(a)) {
+    const m = re.exec(k);
+    if (m && typeof v === 'number' && Number.isFinite(v) && v > 0) out[Number(m[1])] = v;
+  }
+  return out;
+}
+
+const zoneArray = (o: Record<number, number>, n: number): number[] | undefined =>
+  Object.keys(o).length ? Array.from({ length: n }, (_, i) => Math.round(o[i + 1] ?? 0)) : undefined;
 
 /** Aktivitätsliste → nur Aktivitäten eines Kalendertags (lokal, YYYY-MM-DD). */
 export function parseActivities(list: Json, isoDay: string): GarminActivity[] {
@@ -162,6 +182,15 @@ export function parseActivities(list: Json, isoDay: string): GarminActivity[] {
       avgPower: num(a, ['avgPower', 'averagePower'], [], [0, 2000]),
       normPower: num(a, ['normPower', 'normalizedPower'], [], [0, 2000]),
       tss: num(a, ['trainingStressScore'], [], [0, 1000]),
+      avgHr: num(a, ['averageHR', 'avgHr', 'averageHeartRate'], [], [40, 230]),
+      distanceKm: (() => {
+        const m = num(a, ['distance'], [], [0, 1e6]);
+        return m === null ? null : Math.round(m / 100) / 10;
+      })(),
+      elevationM: num(a, ['elevationGain', 'totalElevationGain'], [], [0, 20000]),
+      peaks: collect(a, /^maxAvgPower_(\d+)$/),
+      powerZonesSec: zoneArray(collect(a, /^powerTimeInZone_(\d)$/), 7),
+      hrZonesSec: zoneArray(collect(a, /^hrTimeInZone_(\d)$/), 5),
     }))
     .filter((a) => a.start.startsWith(isoDay));
 }
@@ -230,4 +259,23 @@ export function parseProfile(settings: Json, hrZones: Json): GarminProfile {
     hrFloors: floors.length === 4 && floors.every((f) => f !== null) ? (floors as number[]) : null,
     hrZoneSport: z ? String(z.sport ?? '') : null,
   };
+}
+
+/** Gewichtsverlauf (weight-service/weight/range) → [{date, kg}] – tolerant gegenüber Varianten. */
+export function parseWeights(json: Json): { date: string; kg: number }[] {
+  const out = new Map<string, number>();
+  const visit = (node: Json, depth: number) => {
+    if (depth > 5) return;
+    if (Array.isArray(node)) node.forEach((n) => visit(n, depth + 1));
+    else if (isObj(node)) {
+      const date = [node.calendarDate, node.summaryDate, node.date].find((d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d as string)) as
+        | string
+        | undefined;
+      const w = num(node, ['weight', 'latestWeight.weight'], [], [20, 250000]);
+      if (date && w !== null) out.set(date.slice(0, 10), w > 1000 ? Math.round(w / 100) / 10 : w);
+      Object.values(node).forEach((v) => visit(v, depth + 1));
+    }
+  };
+  visit(json, 0);
+  return [...out.entries()].map(([date, kg]) => ({ date, kg })).sort((a, b) => a.date.localeCompare(b.date));
 }

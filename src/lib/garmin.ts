@@ -4,6 +4,7 @@ import { isoDate } from '@/domain/dates';
 import {
   combineMorning,
   parseProfile,
+  parseWeights,
   type GarminProfile,
   jwtExpiry,
   parseActivities,
@@ -157,4 +158,9 @@ export async function fetchProfile(): Promise<{ profile: GarminProfile; errors: 
     safe(() => get('/biometric-service/heartRateZones/v2'), errors),
   ]);
   return { profile: parseProfile(settings ?? {}, zones ?? []), errors };
+}
+
+/** Gewichtsverlauf aus Garmin (Waage/manuelle Einträge in Garmin Connect). */
+export async function fetchWeights(from: string, to: string): Promise<{ date: string; kg: number }[]> {
+  return parseWeights(await get(`/weight-service/weight/range/${from}/${to}`));
 }

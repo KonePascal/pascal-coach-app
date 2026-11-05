@@ -21,6 +21,12 @@ export interface StoredActivity {
   name?: string;
   start?: string;
   calories?: number | null;
+  avgHr?: number | null;
+  distanceKm?: number | null;
+  elevationM?: number | null;
+  peaks?: Record<number, number>;
+  powerZonesSec?: number[];
+  hrZonesSec?: number[];
 }
 
 export interface LoadOverride {

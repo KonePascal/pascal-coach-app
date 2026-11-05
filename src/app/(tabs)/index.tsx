@@ -267,6 +267,17 @@ export default function StartScreen() {
             </Card>
           </Pressable>
 
+          <Pressable onPress={() => router.push('/analyse')}>
+            <Card>
+              <View style={styles.between}>
+                <ThemedText type="smallBold">📈 Analysen</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Leistungskurve · Zonen · Effizienz · Gewicht ›
+                </ThemedText>
+              </View>
+            </Card>
+          </Pressable>
+
           {/* Erholungseinblicke */}
           <ThemedText type="smallBold" style={styles.section}>
             Erholungseinblicke

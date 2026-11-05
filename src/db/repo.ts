@@ -76,6 +76,7 @@ export async function loadSettings(db: SQLiteDatabase): Promise<Settings> {
     ...stored,
     baselines: { ...DEFAULT_SETTINGS.baselines, ...stored.baselines },
     pmcSeed: { ...DEFAULT_SETTINGS.pmcSeed, ...stored.pmcSeed },
+    weightGoal: { ...DEFAULT_SETTINGS.weightGoal, ...stored.weightGoal },
   };
 }
 
@@ -244,8 +245,8 @@ export async function saveActivities(db: SQLiteDatabase, acts: GarminActivity[])
     for (const a of acts) {
       if (!a.id) continue;
       await db.runAsync(
-        `INSERT OR REPLACE INTO garmin_activities (id, date, name, type, start, duration_min, tss, np, avg_power, calories)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO garmin_activities (id, date, name, type, start, duration_min, tss, np, avg_power, calories, avg_hr, extra)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         a.id,
         a.start.slice(0, 10),
         a.name,
@@ -256,6 +257,14 @@ export async function saveActivities(db: SQLiteDatabase, acts: GarminActivity[])
         a.normPower,
         a.avgPower,
         a.calories,
+        a.avgHr ?? null,
+        JSON.stringify({
+          distanceKm: a.distanceKm ?? null,
+          elevationM: a.elevationM ?? null,
+          peaks: a.peaks ?? {},
+          powerZonesSec: a.powerZonesSec ?? null,
+          hrZonesSec: a.hrZonesSec ?? null,
+        }),
       );
     }
   });
@@ -273,8 +282,10 @@ export async function loadActivities(db: SQLiteDatabase, from: string, to: strin
     name: string;
     start: string;
     calories: number | null;
+    avg_hr: number | null;
+    extra: string | null;
   }>(
-    'SELECT id, date, type, duration_min, tss, np, avg_power, name, start, calories FROM garmin_activities WHERE date BETWEEN ? AND ? ORDER BY start',
+    'SELECT id, date, type, duration_min, tss, np, avg_power, name, start, calories, avg_hr, extra FROM garmin_activities WHERE date BETWEEN ? AND ? ORDER BY start',
     from,
     to,
   );
@@ -289,6 +300,8 @@ export async function loadActivities(db: SQLiteDatabase, from: string, to: strin
     name: r.name,
     start: r.start,
     calories: r.calories,
+    avgHr: r.avg_hr,
+    ...(r.extra ? (JSON.parse(r.extra) as Partial<StoredActivity>) : {}),
   }));
 }
 
@@ -484,6 +497,26 @@ export async function dailyTotals(db: SQLiteDatabase, from: string, to: string) 
     from,
     to,
   );
+}
+
+// ---------- Gewicht ----------
+
+export async function saveWeights(db: SQLiteDatabase, list: { date: string; kg: number }[]): Promise<void> {
+  if (!list.length) return;
+  await db.withTransactionAsync(async () => {
+    for (const w of list) await db.runAsync("INSERT OR REPLACE INTO weights (date, kg, source) VALUES (?, ?, 'garmin')", w.date, w.kg);
+  });
+}
+
+/** Gewicht je Tag: Morgen-Check (manuell) hat Vorrang vor Garmin. */
+export async function loadWeights(db: SQLiteDatabase, from: string): Promise<{ date: string; kg: number }[]> {
+  const [g, c] = await Promise.all([
+    db.getAllAsync<{ date: string; kg: number }>('SELECT date, kg FROM weights WHERE date >= ?', from),
+    db.getAllAsync<{ date: string; kg: number }>('SELECT date, weight AS kg FROM checkins WHERE weight IS NOT NULL AND date >= ?', from),
+  ]);
+  const m = new Map(g.map((x) => [x.date, x.kg]));
+  for (const x of c) m.set(x.date, x.kg);
+  return [...m.entries()].map(([date, kg]) => ({ date, kg })).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 // ---------- Backup ----------

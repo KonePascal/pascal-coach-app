@@ -204,6 +204,19 @@ const MIGRATIONS: ((db: SQLiteDatabase) => Promise<void>)[] = [
       );
     }
   },
+  // v8 – Analysen: Herzfrequenz + Zusatzdaten (Bestwerte, Zonenzeiten) je Aktivität; Verlauf neu laden
+  async (db) => {
+    await db.execAsync(`
+      ALTER TABLE garmin_activities ADD COLUMN avg_hr REAL;
+      ALTER TABLE garmin_activities ADD COLUMN extra TEXT;
+      DELETE FROM settings WHERE key = 'kv:garminHistoryFrom';
+      CREATE TABLE IF NOT EXISTS weights (
+        date   TEXT PRIMARY KEY NOT NULL,
+        kg     REAL NOT NULL,
+        source TEXT NOT NULL DEFAULT 'garmin'
+      );
+    `);
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
