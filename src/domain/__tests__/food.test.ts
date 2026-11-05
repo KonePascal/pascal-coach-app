@@ -9,7 +9,7 @@ describe('Ernährung', () => {
   test('Menge skalieren + summieren (Meal-Prep-Portion)', () => {
     const a = scale(chicken, 200);
     const b = scale(rice, 100);
-    expect(a).toEqual({ kcal: 220, protein: 47, carbs: 0, fat: 3 });
+    expect(a).toMatchObject({ kcal: 220, protein: 47, carbs: 0, fat: 3 });
     expect(sum([a, b])).toEqual({ kcal: 570, protein: 54, carbs: 77, fat: 3.6 });
   });
 

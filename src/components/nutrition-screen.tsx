@@ -1,7 +1,7 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -21,7 +21,7 @@ import { MacroBars } from '@/components/macro-bars';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Button, Card, NumberField, parseNum } from '@/components/ui';
-import { MaxContentWidth, Spacing } from '@/constants/theme';
+import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import {
   dayLog,
   deleteLogEntry,
@@ -33,11 +33,28 @@ import {
   recentFoods,
   saveFood,
   saveMeal,
+  searchFoods,
+  setServing,
+  updateLogEntry,
   type SavedMeal,
   type StoredFood,
 } from '@/db/repo';
 import { fromIso, isoDate, labelDate } from '@/domain/dates';
-import { MEALS, kcalFromMacros, scale, searchLocal, sum, type Food, type LogEntry, type Meal } from '@/domain/food';
+import {
+  MEALS,
+  MICROS,
+  extraTargets,
+  kcalFromMacros,
+  rescaleEntry,
+  scale,
+  searchLocal,
+  sum,
+  sumNutrients,
+  type Food,
+  type LogEntry,
+  type Meal,
+  type Nutrients,
+} from '@/domain/food';
 import { addDays } from '@/domain/pmc';
 import { useDayTarget } from '@/hooks/use-day-target';
 import { useTheme } from '@/hooks/use-theme';
@@ -63,13 +80,14 @@ export default function NutritionScreen() {
   const [online, setOnline] = useState<Food[]>([]);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<'recent' | 'all' | 'meals'>('recent');
+  const [hits, setHits] = useState<StoredFood[]>([]);
 
   // Menge
   const [picked, setPicked] = useState<Food | null>(null);
   const [grams, setGrams] = useState('100');
 
   // Eigenes Lebensmittel / Schnell-Eintrag
-  const [custom, setCustom] = useState({ name: '', kcal: '', protein: '', carbs: '', fat: '', serving: '' });
+  const [custom, setCustom] = useState(EMPTY_CUSTOM);
 
   // Scanner
   const [permission, requestPermission] = useCameraPermissions();
@@ -90,7 +108,18 @@ export default function NutritionScreen() {
     }, [reload]),
   );
 
-  const eaten = sum(entries);
+  // Suche über alle Lebensmittel (eigene + Bundeslebensmittelschlüssel), leicht verzögert
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setHits([]);
+      return;
+    }
+    const t = setTimeout(() => void searchFoods(db, q).then(setHits), 150);
+    return () => clearTimeout(t);
+  }, [db, query]);
+
+  const eaten = sumNutrients(entries);
 
   const openAdd = (m: Meal) => {
     setMeal(m);
@@ -144,7 +173,7 @@ export default function NutritionScreen() {
           {
             text: 'Eintragen',
             onPress: () => {
-              setCustom({ name: '', kcal: '', protein: '', carbs: '', fat: '', serving: '' });
+              setCustom(EMPTY_CUSTOM);
               setPicked({ name: '', barcode: code, kcal: 0, protein: 0, carbs: 0, fat: 0, source: 'own' });
               setSheet('custom');
             },
@@ -187,6 +216,10 @@ export default function NutritionScreen() {
       protein: p,
       carbs: c,
       fat: f,
+      fiber: parseNum(custom.fiber),
+      sugar: parseNum(custom.sugar),
+      satFat: parseNum(custom.satFat),
+      salt: parseNum(custom.salt),
       servingG: parseNum(custom.serving),
       source: 'own',
     };
@@ -200,9 +233,54 @@ export default function NutritionScreen() {
     const f = parseNum(custom.fat) ?? 0;
     const kcal = parseNum(custom.kcal) ?? kcalFromMacros(p, c, f);
     if (!kcal) return;
-    await logFood(db, { date, meal, foodId: null, name: custom.name.trim() || 'Schnell-Eintrag', grams: 0, kcal, protein: p, carbs: c, fat: f });
+    await logFood(db, {
+      date,
+      meal,
+      foodId: null,
+      name: custom.name.trim() || 'Schnell-Eintrag',
+      grams: 0,
+      kcal,
+      protein: p,
+      carbs: c,
+      fat: f,
+      fiber: parseNum(custom.fiber) ?? undefined,
+      sugar: parseNum(custom.sugar) ?? undefined,
+      salt: parseNum(custom.salt) ?? undefined,
+    });
     setSheet(null);
     await reload();
+  };
+
+  const editEntry = (e: LogEntry) => {
+    if (!e.grams) {
+      removeEntry(e);
+      return;
+    }
+    Alert.prompt(
+      e.name,
+      'Neue Menge in g (0 = löschen)',
+      async (v) => {
+        const g = parseNum(v ?? '');
+        if (g === null) return;
+        if (g <= 0) await deleteLogEntry(db, e.id!);
+        else await updateLogEntry(db, rescaleEntry(e, g / e.grams));
+        await reload();
+      },
+      'plain-text',
+      String(e.grams),
+      'decimal-pad',
+    );
+  };
+
+  const rememberServing = (f: Food & { id?: number }) => {
+    const g = parseNum(grams);
+    if (!f.id || !g) return;
+    Alert.prompt('Portion merken', `Name für ${g} g, z. B. „1 Scheibe“`, async (label) => {
+      if (!label?.trim()) return;
+      await setServing(db, f.id!, g, `${label.trim()} (${g} g)`);
+      setPicked({ ...f, servingG: g, servingLabel: `${label.trim()} (${g} g)` });
+      await reload();
+    });
   };
 
   const removeEntry = (e: LogEntry) =>
@@ -227,18 +305,7 @@ export default function NutritionScreen() {
       'Wie viele Portionen?',
       async (v) => {
         const factor = parseNum(v ?? '1') ?? 1;
-        for (const it of sm.items) {
-          await logFood(db, {
-            ...it,
-            date,
-            meal,
-            grams: Math.round(it.grams * factor),
-            kcal: Math.round(it.kcal * factor),
-            protein: Math.round(it.protein * factor * 10) / 10,
-            carbs: Math.round(it.carbs * factor * 10) / 10,
-            fat: Math.round(it.fat * factor * 10) / 10,
-          });
-        }
+        for (const it of sm.items) await logFood(db, { ...rescaleEntry(it, factor), date, meal });
         setSheet(null);
         await reload();
       },
@@ -257,14 +324,16 @@ export default function NutritionScreen() {
     await reload();
   };
 
+  const q = query.trim();
   const list: (Food & { useCount?: number })[] =
-    tab === 'recent' ? (query ? searchLocal(recent, query) : recent) : tab === 'all' ? (query ? searchLocal(foods, query) : foods) : [];
+    q.length >= 2 ? hits : tab === 'recent' ? recent : tab === 'all' ? (q ? searchLocal(foods, q) : foods) : [];
   const preview = picked ? scale(picked, parseNum(grams) ?? 0) : null;
 
   return (
     <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safe} edges={['bottom']}>
+      <SafeAreaView style={styles.safe} edges={['top']}>
         <ScrollView contentContainerStyle={styles.scroll}>
+          <ThemedText type="subtitle">Ernährung</ThemedText>
           {/* Datum */}
           <View style={styles.nav}>
             <Pressable onPress={() => setDate(addDays(date, -1))} hitSlop={12}>
@@ -293,6 +362,7 @@ export default function NutritionScreen() {
               </ThemedText>
             </Card>
           ) : null}
+          {target ? <DayDetails eaten={eaten} kcal={target.kcal} /> : null}
 
           {MEALS.map((m) => {
             const items = entries.filter((e) => e.meal === m.key);
@@ -306,7 +376,7 @@ export default function NutritionScreen() {
                   <ThemedText type="smallBold">{s.kcal ? `${s.kcal} kcal` : ''}</ThemedText>
                 </View>
                 {items.map((e) => (
-                  <Pressable key={e.id} onLongPress={() => removeEntry(e)} style={styles.entry}>
+                  <Pressable key={e.id} onPress={() => editEntry(e)} onLongPress={() => removeEntry(e)} style={styles.entry}>
                     <View style={{ flex: 1 }}>
                       <ThemedText type="small" numberOfLines={1}>
                         {e.name}
@@ -342,7 +412,11 @@ export default function NutritionScreen() {
             );
           })}
           <ThemedText type="small" themeColor="textSecondary">
-            Eintrag lange drücken zum Löschen. Lebensmittel-Daten: Open Food Facts (frei) + deine eigenen.
+            Eintrag antippen = Menge ändern, lange drücken = löschen.
+          </ThemedText>
+          <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 11 }}>
+            Lebensmitteldaten: Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS) 4.0, DOI 10.25826/Data20251217-134202-0, CC BY 4.0 (Auszug
+            via @thereforejs/foods, kcal nach LMIV berechnet) · Open Food Facts (ODbL) · eigene Einträge.
           </ThemedText>
         </ScrollView>
       </SafeAreaView>
@@ -370,7 +444,7 @@ export default function NutritionScreen() {
                     setOnline([]);
                     if (v && tab === 'meals') setTab('all');
                   }}
-                  placeholder="Lebensmittel suchen …"
+                  placeholder="Suchen in 7.100 Lebensmitteln …"
                   placeholderTextColor={theme.textSecondary}
                   autoFocus
                   returnKeyType="search"
@@ -383,7 +457,7 @@ export default function NutritionScreen() {
                     title="⚡ Schnell"
                     variant="secondary"
                     onPress={() => {
-                      setCustom({ name: '', kcal: '', protein: '', carbs: '', fat: '', serving: '' });
+                      setCustom(EMPTY_CUSTOM);
                       setSheet('quick');
                     }}
                   />
@@ -392,11 +466,16 @@ export default function NutritionScreen() {
                     variant="secondary"
                     onPress={() => {
                       setPicked(null);
-                      setCustom({ name: query, kcal: '', protein: '', carbs: '', fat: '', serving: '' });
+                      setCustom({ ...EMPTY_CUSTOM, name: query });
                       setSheet('custom');
                     }}
                   />
                 </View>
+                {q.length >= 2 ? (
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {hits.length ? `${hits.length >= 60 ? '60+' : hits.length} Treffer · meine zuerst, dann BLS` : 'Kein Treffer – online suchen oder „＋ Eigenes“'}
+                  </ThemedText>
+                ) : (
                 <View style={styles.tabs}>
                   {(
                     [
@@ -412,8 +491,9 @@ export default function NutritionScreen() {
                     </Pressable>
                   ))}
                 </View>
+                )}
 
-                {tab === 'meals' ? (
+                {tab === 'meals' && q.length < 2 ? (
                   <FlatList
                     data={saved}
                     keyExtractor={(m) => String(m.id)}
@@ -463,8 +543,8 @@ export default function NutritionScreen() {
                             {item.brand ? ` · ${item.brand}` : ''}
                           </ThemedText>
                           <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 12 }}>
-                            {item.source === 'off' && item.useCount === -1 ? '🌐 ' : ''}
-                            je 100 g: KH {item.carbs} · P {item.protein} · F {item.fat}
+                            {SOURCE_BADGE[item.source]} je 100 g: KH {item.carbs} · P {item.protein} · F {item.fat}
+                            {item.fiber ? ` · Bst ${item.fiber}` : ''}
                           </ThemedText>
                         </View>
                         <ThemedText type="small">{item.kcal} kcal</ThemedText>
@@ -493,15 +573,11 @@ export default function NutritionScreen() {
                       </Pressable>
                     ))}
                 </View>
-                {preview ? (
-                  <Card>
-                    <ThemedText style={{ fontSize: 26, fontWeight: '700' }}>{preview.kcal} kcal</ThemedText>
-                    <ThemedText type="small">
-                      KH {preview.carbs} g · Protein {preview.protein} g · Fett {preview.fat} g
-                    </ThemedText>
-                  </Card>
-                ) : null}
+                {preview ? <NutrientTable n={preview} food={picked} /> : null}
                 <Button title="Hinzufügen" onPress={() => void add()} />
+                {picked.id ? (
+                  <Button title="Diese Menge als Portion merken" variant="secondary" onPress={() => rememberServing(picked)} />
+                ) : null}
               </ScrollView>
             ) : null}
 
@@ -536,12 +612,18 @@ export default function NutritionScreen() {
                   <NumberField label="KH" unit="g" value={custom.carbs} onChange={(v) => setCustom((c) => ({ ...c, carbs: v }))} />
                   <NumberField label="Protein" unit="g" value={custom.protein} onChange={(v) => setCustom((c) => ({ ...c, protein: v }))} />
                   <NumberField label="Fett" unit="g" value={custom.fat} onChange={(v) => setCustom((c) => ({ ...c, fat: v }))} />
+                  <NumberField label="davon Zucker" unit="g" value={custom.sugar} onChange={(v) => setCustom((c) => ({ ...c, sugar: v }))} />
+                  <NumberField label="Ballaststoffe" unit="g" value={custom.fiber} onChange={(v) => setCustom((c) => ({ ...c, fiber: v }))} />
+                  <NumberField label="Salz" unit="g" value={custom.salt} onChange={(v) => setCustom((c) => ({ ...c, salt: v }))} />
                   {sheet === 'custom' ? (
-                    <NumberField label="Portion" unit="g" value={custom.serving} onChange={(v) => setCustom((c) => ({ ...c, serving: v }))} />
+                    <>
+                      <NumberField label="ges. Fett" unit="g" value={custom.satFat} onChange={(v) => setCustom((c) => ({ ...c, satFat: v }))} />
+                      <NumberField label="Portion" unit="g" value={custom.serving} onChange={(v) => setCustom((c) => ({ ...c, serving: v }))} />
+                    </>
                   ) : null}
                 </View>
                 <ThemedText type="small" themeColor="textSecondary">
-                  kcal leer lassen → wird aus den Makros berechnet.
+                  kcal leer lassen → wird aus den Makros berechnet. Werte stehen auf der Packung (Nährwerttabelle).
                 </ThemedText>
                 <Button title={sheet === 'quick' ? 'Eintragen' : 'Speichern & Menge wählen'} onPress={() => void (sheet === 'quick' ? saveQuick() : saveCustom())} />
               </ScrollView>
@@ -550,6 +632,89 @@ export default function NutritionScreen() {
         </ThemedView>
       </Modal>
     </ThemedView>
+  );
+}
+
+const EMPTY_CUSTOM = { name: '', kcal: '', protein: '', carbs: '', fat: '', sugar: '', fiber: '', salt: '', satFat: '', serving: '' };
+
+const SOURCE_BADGE: Record<Food['source'], string> = { bls: 'BLS ·', off: '🌐', own: '★', basis: '★' };
+
+const fmt = (n: number, d = 1) => (Math.round(n * 10 ** d) / 10 ** d).toLocaleString('de-DE');
+
+/** Nährwerttabelle für die gewählte Menge (wie auf der Packung + Mikros). */
+function NutrientTable({ n, food }: { n: Nutrients; food: Food }) {
+  const known = (v: number | null | undefined) => v !== null && v !== undefined;
+  const rows: [string, string, boolean?][] = [
+    ['Kohlenhydrate', `${fmt(n.carbs)} g`],
+    ['  davon Zucker', known(food.sugar) ? `${fmt(n.sugar)} g` : '–', true],
+    ['Ballaststoffe', known(food.fiber) ? `${fmt(n.fiber)} g` : '–'],
+    ['Protein', `${fmt(n.protein)} g`],
+    ['Fett', `${fmt(n.fat)} g`],
+    ['  davon gesättigt', known(food.satFat) ? `${fmt(n.satFat)} g` : '–', true],
+    ['Salz', known(food.salt) ? `${fmt(n.salt, 2)} g` : '–'],
+  ];
+  const micros = MICROS.filter((m) => typeof n.micros[m.key] === 'number');
+  return (
+    <Card>
+      <ThemedText style={{ fontSize: 26, fontWeight: '700' }}>{n.kcal} kcal</ThemedText>
+      {rows.map(([l, v, sub]) => (
+        <View key={l} style={styles.between}>
+          <ThemedText type="small" themeColor={sub ? 'textSecondary' : undefined}>
+            {l}
+          </ThemedText>
+          <ThemedText type={sub ? 'small' : 'smallBold'}>{v}</ThemedText>
+        </View>
+      ))}
+      {micros.length ? (
+        <ThemedText type="small" themeColor="textSecondary">
+          {micros.map((m) => `${m.label} ${fmt(n.micros[m.key]!, 1)} ${m.unit} (${Math.round((n.micros[m.key]! / m.ref) * 100)} %)`).join(' · ')}
+        </ThemedText>
+      ) : null}
+    </Card>
+  );
+}
+
+/** Tagesdetails: Ballaststoffe, Zucker, gesättigte Fette, Salz und Mikros gegen Ziel/Grenze. */
+function DayDetails({ eaten, kcal }: { eaten: Nutrients; kcal: number }) {
+  const t = extraTargets(kcal);
+  const bar = (label: string, v: number, goal: number, kind: 'min' | 'max', unit = 'g') => {
+    const pct = Math.min(1, goal > 0 ? v / goal : 0);
+    const ok = kind === 'min' ? v >= goal : v <= goal;
+    const color = kind === 'min' ? (ok ? '#2DB55D' : '#3c87f7') : ok ? '#8E9AB5' : '#E5484D';
+    return (
+      <View key={label} style={{ gap: 3 }}>
+        <View style={styles.between}>
+          <ThemedText type="small">{label}</ThemedText>
+          <ThemedText type="small">
+            <ThemedText type="smallBold">{fmt(v, unit === 'g' && v < 10 ? 1 : 0)}</ThemedText> / {kind === 'min' ? '≥' : '≤'} {goal} {unit}
+          </ThemedText>
+        </View>
+        <View style={styles.track}>
+          <View style={[styles.fill, { width: `${pct * 100}%`, backgroundColor: color }]} />
+        </View>
+      </View>
+    );
+  };
+  const micros = MICROS.filter((m) => (eaten.micros[m.key] ?? 0) > 0);
+  return (
+    <Card title="Details">
+      {bar('Ballaststoffe', eaten.fiber, t.fiber.min, 'min')}
+      {bar('Zucker', eaten.sugar, t.sugar.max, 'max')}
+      {bar('Gesättigte Fette', eaten.satFat, t.satFat.max, 'max')}
+      {bar('Salz', eaten.salt, t.salt.max, 'max')}
+      {micros.length ? (
+        <>
+          <ThemedText type="smallBold" style={{ marginTop: 6 }}>
+            Mikronährstoffe (aus dem Essen, ohne Supplements)
+          </ThemedText>
+          {micros.map((m) => bar(m.label, eaten.micros[m.key] ?? 0, m.ref, 'min', m.unit))}
+        </>
+      ) : (
+        <ThemedText type="small" themeColor="textSecondary">
+          Mikronährstoffe (Eisen, Magnesium, Zink, Vitamin D …) erscheinen hier, sobald die BLS-Mikrowerte eingespielt sind.
+        </ThemedText>
+      )}
+    </Card>
   );
 }
 
@@ -564,7 +729,9 @@ function defaultMeal(): Meal {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safe: { flex: 1, width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center' },
-  scroll: { padding: Spacing.three, gap: Spacing.three, paddingBottom: Spacing.six },
+  scroll: { padding: Spacing.three, gap: Spacing.three, paddingBottom: BottomTabInset + Spacing.five },
+  track: { height: 6, borderRadius: 3, backgroundColor: '#8883', overflow: 'hidden' },
+  fill: { height: 6, borderRadius: 3 },
   nav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 },
   between: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   entry: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },

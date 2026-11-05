@@ -1,15 +1,14 @@
 import { useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import Svg, { Rect } from 'react-native-svg';
 
 import { LineChart } from '@/components/line-chart';
 import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
 import { Card, LIGHT_COLOR } from '@/components/ui';
 import { zoneColor } from '@/components/workout-card';
-import { MaxContentWidth, Spacing } from '@/constants/theme';
+import { Spacing } from '@/constants/theme';
 import { dailyTotals, loadActivities, loadSettings, loadWeights } from '@/db/repo';
 import {
   CURVE_SECONDS,
@@ -35,7 +34,7 @@ interface Data {
   zones: ZoneWeek[];
   ef: ReturnType<typeof efTrend>;
   weight: ReturnType<typeof weightTrend>;
-  food: { days: number; kcal: number; carbs: number; protein: number; fat: number } | null;
+  food: { days: number; kcal: number; carbs: number; protein: number; fat: number; fiber: number; sugar: number; salt: number } | null;
 }
 
 const ZONE_POWER_MID = [0.45, 0.65, 0.83, 0.98, 1.13, 1.35, 1.6]; // für Farben
@@ -72,7 +71,10 @@ function ZoneBars({ weeks }: { weeks: ZoneWeek[] }) {
   );
 }
 
-export default function AnalyseScreen() {
+export type InsightData = Data;
+
+/** Lädt alles für Leistung/Körper (365 Tage Aktivitäten, 120 Tage Gewicht, 7 Tage Essen). */
+export function useInsights() {
   const db = useSQLiteContext();
   const [d, setD] = useState<Data | null>(null);
 
@@ -99,6 +101,9 @@ export default function AnalyseScreen() {
             carbs: Math.round(totals.reduce((a, t) => a + t.carbs, 0) / n),
             protein: Math.round(totals.reduce((a, t) => a + t.protein, 0) / n),
             fat: Math.round(totals.reduce((a, t) => a + t.fat, 0) / n),
+            fiber: Math.round(totals.reduce((a, t) => a + t.fiber, 0) / n),
+            sugar: Math.round(totals.reduce((a, t) => a + t.sugar, 0) / n),
+            salt: Math.round((totals.reduce((a, t) => a + t.salt, 0) / n) * 10) / 10,
           }
         : null,
     });
@@ -110,7 +115,11 @@ export default function AnalyseScreen() {
     }, [load]),
   );
 
-  if (!d) return <ThemedView style={{ flex: 1 }} />;
+  return d;
+}
+
+/** Analysen › Leistung: Leistungskurve, FTP-Schätzung, Zonen, aerobe Effizienz. */
+export function PowerSection({ d }: { d: Data }) {
   const { s } = d;
   const kg = s.weightKg;
   const est = estimateFtp(d.recent) ?? estimateFtp(d.all);
@@ -118,13 +127,10 @@ export default function AnalyseScreen() {
   const lx = (sec: number) => Math.log10(sec);
   const thisWeek = d.zones[d.zones.length - 1];
   const efSlope = slopePerDay(d.ef.map((p) => ({ date: p.date, v: p.ef })));
-  const lastW = d.weight.points[d.weight.points.length - 1];
-  const t0 = d.weight.points[0]?.date;
   const pz = powerZones(s.ftp);
 
   return (
-    <ThemedView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+    <View style={{ gap: Spacing.three }}>
         {/* Leistungskurve */}
         <Card title="Leistungskurve">
           {hasCurve ? (
@@ -165,7 +171,7 @@ export default function AnalyseScreen() {
             </>
           ) : (
             <ThemedText type="small" themeColor="textSecondary">
-              Garmin liefert noch keine Bestwerte. Nach dem nächsten Sync (Form-Tab nach unten ziehen) erscheinen sie hier – sofern Garmin
+              Garmin liefert noch keine Bestwerte. Nach dem nächsten Sync (Start nach unten ziehen) erscheinen sie hier – sofern Garmin
               „maxAvgPower“ für deine Fahrten bereitstellt.
             </ThemedText>
           )}
@@ -230,6 +236,18 @@ export default function AnalyseScreen() {
           )}
         </Card>
 
+    </View>
+  );
+}
+
+/** Analysen › Körper: Gewicht mit Zielpfad, Ernährung im Wochenschnitt. */
+export function BodySection({ d }: { d: Data }) {
+  const { s } = d;
+  const kg = s.weightKg;
+  const lastW = d.weight.points[d.weight.points.length - 1];
+  const t0 = d.weight.points[0]?.date;
+  return (
+    <View style={{ gap: Spacing.three }}>
         {/* Gewicht */}
         <Card title={`Gewicht · Ziel ${s.weightGoal.kg} kg bis ${fromIso(s.weightGoal.date).toLocaleDateString('de-DE')}`}>
           {d.weight.points.length >= 2 && t0 ? (
@@ -269,6 +287,7 @@ export default function AnalyseScreen() {
             <ThemedText type="small">
               {d.food.kcal} kcal · KH {d.food.carbs} g · Protein {d.food.protein} g ({(d.food.protein / kg).toFixed(1)} g/kg) · Fett {d.food.fat} g
               {'  '}({d.food.days} Tage erfasst)
+              {'\n'}Ballaststoffe {d.food.fiber} g (Ziel ≥ 30) · Zucker {d.food.sugar} g · Salz {d.food.salt} g (≤ 6)
             </ThemedText>
           ) : (
             <ThemedText type="small" themeColor="textSecondary">
@@ -276,14 +295,11 @@ export default function AnalyseScreen() {
             </ThemedText>
           )}
         </Card>
-      </ScrollView>
-    </ThemedView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  scroll: { padding: Spacing.three, gap: Spacing.three, paddingBottom: Spacing.six, width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
   legend: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },

@@ -1,16 +1,13 @@
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { PMC_COLORS, PmcChart } from '@/components/pmc-chart';
 import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Card, LIGHT_COLOR, LIGHT_EMOJI, parseNum } from '@/components/ui';
-import { fmtHours } from '@/domain/readiness';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { getRecent, setOverride, type StoredCheckIn } from '@/db/repo';
+import { Card, LIGHT_COLOR, parseNum } from '@/components/ui';
+import { Spacing } from '@/constants/theme';
+import { setOverride } from '@/db/repo';
 import { fromIso, labelDate } from '@/domain/dates';
 import { plannedFor } from '@/domain/load';
 import { checkPlan, rampRate } from '@/domain/plan-check';
@@ -39,7 +36,8 @@ function Tile({ label, value, color, sub }: { label: string; value: string; colo
   );
 }
 
-export default function FormScreen() {
+/** Analysen › Form: PMC-Verlauf, Prognose, Plan-Check, Plan-/Ist-TSS anpassen. */
+export function FormSection() {
   const db = useSQLiteContext();
   const theme = useTheme();
   const { model, reload } = usePmc();
@@ -48,11 +46,9 @@ export default function FormScreen() {
   const [edit, setEdit] = useState<string | null>(null);
   const [value, setValue] = useState('');
   const [showPast, setShowPast] = useState(false);
-  const [recent, setRecent] = useState<StoredCheckIn[]>([]);
 
   const sync = useCallback(async () => {
     setSyncing(true);
-    void getRecent(db, 14).then(setRecent);
     try {
       const m = await reload();
       if (!m) return;
@@ -76,9 +72,9 @@ export default function FormScreen() {
 
   if (!model) {
     return (
-      <ThemedView style={[styles.container, { justifyContent: 'center' }]}>
+      <View style={{ padding: Spacing.five }}>
         <ActivityIndicator />
-      </ThemedView>
+      </View>
     );
   }
 
@@ -165,21 +161,8 @@ export default function FormScreen() {
   };
 
   return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safe} edges={['top']}>
-        <ScrollView
-          contentContainerStyle={styles.scroll}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={<RefreshControl refreshing={syncing} onRefresh={() => void sync()} />}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <ThemedText type="subtitle">Form</ThemedText>
-            <Pressable onPress={() => router.push('/analyse')}>
-              <ThemedText type="smallBold" style={{ color: '#3c87f7' }}>
-                Analysen ›
-              </ThemedText>
-            </Pressable>
-          </View>
-
+    <View style={{ gap: Spacing.three }}>
+          {syncing ? <ActivityIndicator /> : null}
           <View style={styles.tiles}>
             <Tile label="Fitness (CTL)" value={String(r0(todayRow.ctl))} color={PMC_COLORS.ctl} />
             <Tile label="Müdigkeit (ATL)" value={String(r0(todayRow.atl))} color={PMC_COLORS.atl} />
@@ -246,34 +229,6 @@ export default function FormScreen() {
             {showPast ? past.map((r) => dayRow(r, 'actual')) : null}
           </Card>
 
-          <Card title="Morgenwerte · 14 Tage">
-            {recent.length === 0 ? (
-              <ThemedText type="small" themeColor="textSecondary">
-                Noch keine Check-ins.
-              </ThemedText>
-            ) : (
-              recent.map((r) => (
-                <View key={r.date} style={styles.recentRow}>
-                  <ThemedText type="small" style={{ width: 92 }}>
-                    {r.light ? LIGHT_EMOJI[r.light] : '⚪️'} {labelDate(fromIso(r.date))}
-                  </ThemedText>
-                  <ThemedText type="small" themeColor="textSecondary" style={{ flex: 1, textAlign: 'right' }}>
-                    {[
-                      r.hrv != null && `HRV ${Math.round(r.hrv)}`,
-                      r.rhr != null && `RP ${Math.round(r.rhr)}`,
-                      r.sleepHours != null && fmtHours(r.sleepHours),
-                      r.weight != null && `${r.weight} kg`,
-                      r.symptoms && '🤒',
-                      r.alcohol && '🍺',
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </ThemedText>
-                </View>
-              ))
-            )}
-          </Card>
-
           {syncMsg ? (
             <ThemedText type="small" themeColor="textSecondary">
               {syncMsg}
@@ -283,16 +238,11 @@ export default function FormScreen() {
             Start: CTL {settings.pmcSeed.ctl} / ATL {settings.pmcSeed.atl} am {labelDate(fromIso(settings.pmcSeed.date))} (Einstellungen). Ist-TSS
             von Garmin, Plan aus TrainingPeaks, Krafteinheit pauschal {settings.gymTss} TSS.
           </ThemedText>
-        </ScrollView>
-      </SafeAreaView>
-    </ThemedView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  safe: { flex: 1, width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center' },
-  scroll: { padding: Spacing.three, gap: Spacing.three, paddingBottom: BottomTabInset + Spacing.five },
   tiles: { flexDirection: 'row', gap: Spacing.two },
   tile: { flex: 1, gap: 2 },
   dayRow: { paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: '#8884' },
@@ -300,6 +250,5 @@ const styles = StyleSheet.create({
   editRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two, paddingTop: Spacing.two, alignItems: 'center' },
   tssInput: { width: 70, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, fontSize: 17, fontWeight: '600' },
   pill: { backgroundColor: '#3c87f7', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 16 },
-  recentRow: { flexDirection: 'row', paddingVertical: 3 },
   pillGrey: { backgroundColor: '#8883', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 16 },
 });

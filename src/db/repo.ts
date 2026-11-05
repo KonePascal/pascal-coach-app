@@ -1,6 +1,6 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
-import type { Food, LogEntry, Meal } from '@/domain/food';
+import { buildFoodSearch, queryGroups, searchKey, type Food, type LogEntry, type Meal, type Micros } from '@/domain/food';
 import type { GarminActivity } from '@/domain/garmin-parse';
 import type { LoadOverride, StoredActivity } from '@/domain/load';
 import type { LibraryItem, LoggedWorkout } from '@/domain/resolve';
@@ -372,6 +372,7 @@ export type StoredFood = Food & { id: number; useCount: number };
 
 interface FoodRow {
   id: number;
+  code: string | null;
   name: string;
   brand: string | null;
   barcode: string | null;
@@ -379,14 +380,29 @@ interface FoodRow {
   protein: number;
   carbs: number;
   fat: number;
+  fiber: number | null;
+  sugar: number | null;
+  sat_fat: number | null;
+  salt: number | null;
+  micros: string | null;
   serving_g: number | null;
   serving_label: string | null;
   source: Food['source'];
   use_count: number;
 }
 
+const parseMicros = (s: string | null): Micros | null => {
+  if (!s) return null;
+  try {
+    return JSON.parse(s) as Micros;
+  } catch {
+    return null;
+  }
+};
+
 const toFood = (r: FoodRow): StoredFood => ({
   id: r.id,
+  code: r.code,
   name: r.name,
   brand: r.brand,
   barcode: r.barcode,
@@ -394,14 +410,32 @@ const toFood = (r: FoodRow): StoredFood => ({
   protein: r.protein,
   carbs: r.carbs,
   fat: r.fat,
+  fiber: r.fiber,
+  sugar: r.sugar,
+  satFat: r.sat_fat,
+  salt: r.salt,
+  micros: parseMicros(r.micros),
   servingG: r.serving_g,
   servingLabel: r.serving_label,
   source: r.source,
   useCount: r.use_count,
 });
 
+/** Eigene, Basis- und gescannte Lebensmittel (ohne die 7.000 BLS-Einträge). */
 export async function listFoods(db: SQLiteDatabase): Promise<StoredFood[]> {
-  const rows = await db.getAllAsync<FoodRow>('SELECT * FROM foods ORDER BY use_count DESC, name');
+  const rows = await db.getAllAsync<FoodRow>("SELECT * FROM foods WHERE source != 'bls' ORDER BY use_count DESC, name");
+  return rows.map(toFood);
+}
+
+/**
+ * Suche über alle Lebensmittel (eigene + BLS). Jedes Wort muss vorkommen (auch über
+ * Wortgrenzen hinweg). Reihenfolge: oft genutzt → eigene vor BLS → Wortanfang → kurzer Name.
+ */
+export async function searchFoods(db: SQLiteDatabase, query: string, limit = 60): Promise<StoredFood[]> {
+  const groups = queryGroups(query);
+  if (!groups.length) return [];
+  const sql = buildFoodSearch(groups);
+  const rows = await db.getAllAsync<FoodRow>(sql.text, ...sql.params, limit);
   return rows.map(toFood);
 }
 
@@ -415,44 +449,58 @@ export async function foodByBarcode(db: SQLiteDatabase, barcode: string): Promis
   return r ? toFood(r) : null;
 }
 
+const foodParams = (f: Food) => [
+  f.name, f.brand ?? null, f.kcal, f.protein, f.carbs, f.fat,
+  f.fiber ?? null, f.sugar ?? null, f.satFat ?? null, f.salt ?? null,
+  f.micros ? JSON.stringify(f.micros) : null,
+  f.servingG ?? null, f.servingLabel ?? null, searchKey(`${f.name} ${f.brand ?? ''}`),
+];
+const FOOD_SET =
+  'name = ?, brand = ?, kcal = ?, protein = ?, carbs = ?, fat = ?, fiber = ?, sugar = ?, sat_fat = ?, salt = ?, micros = ?, serving_g = ?, serving_label = ?, search = ?';
+
 /** Speichert ein Lebensmittel (gleicher Barcode → aktualisieren) und gibt die ID zurück. */
 export async function saveFood(db: SQLiteDatabase, f: Food): Promise<number> {
-  if (f.barcode) {
-    const existing = await foodByBarcode(db, f.barcode);
-    if (existing) {
-      await db.runAsync(
-        'UPDATE foods SET name = ?, brand = ?, kcal = ?, protein = ?, carbs = ?, fat = ?, serving_g = ?, serving_label = ? WHERE id = ?',
-        f.name, f.brand ?? null, f.kcal, f.protein, f.carbs, f.fat, f.servingG ?? null, f.servingLabel ?? null, existing.id,
-      );
-      return existing.id;
-    }
-  }
-  if (f.id) {
-    await db.runAsync(
-      'UPDATE foods SET name = ?, brand = ?, kcal = ?, protein = ?, carbs = ?, fat = ?, serving_g = ?, serving_label = ? WHERE id = ?',
-      f.name, f.brand ?? null, f.kcal, f.protein, f.carbs, f.fat, f.servingG ?? null, f.servingLabel ?? null, f.id,
-    );
-    return f.id;
+  const id = f.id ?? (f.barcode ? (await foodByBarcode(db, f.barcode))?.id : undefined);
+  if (id) {
+    await db.runAsync(`UPDATE foods SET ${FOOD_SET} WHERE id = ?`, ...foodParams(f), id);
+    return id;
   }
   const r = await db.runAsync(
-    'INSERT INTO foods (name, brand, barcode, kcal, protein, carbs, fat, serving_g, serving_label, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    f.name, f.brand ?? null, f.barcode ?? null, f.kcal, f.protein, f.carbs, f.fat, f.servingG ?? null, f.servingLabel ?? null, f.source,
+    'INSERT INTO foods (name, brand, kcal, protein, carbs, fat, fiber, sugar, sat_fat, salt, micros, serving_g, serving_label, search, barcode, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ...foodParams(f), f.barcode ?? null, f.source,
   );
   return Number(r.lastInsertRowId);
 }
 
+/** Portion an einem (auch BLS-)Lebensmittel merken, z. B. „1 Scheibe = 50 g“. */
+export async function setServing(db: SQLiteDatabase, id: number, grams: number, label: string): Promise<void> {
+  await db.runAsync('UPDATE foods SET serving_g = ?, serving_label = ? WHERE id = ?', grams, label, id);
+}
+
 export async function deleteFood(db: SQLiteDatabase, id: number): Promise<void> {
-  await db.runAsync('DELETE FROM foods WHERE id = ?', id);
+  await db.runAsync("DELETE FROM foods WHERE id = ? AND source != 'bls'", id);
 }
 
 export async function logFood(db: SQLiteDatabase, e: LogEntry): Promise<void> {
   await db.runAsync(
-    'INSERT INTO food_log (date, meal, food_id, name, grams, kcal, protein, carbs, fat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO food_log (date, meal, food_id, name, grams, kcal, protein, carbs, fat, fiber, sugar, sat_fat, salt, micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     e.date, e.meal, e.foodId, e.name, e.grams, e.kcal, e.protein, e.carbs, e.fat,
+    e.fiber ?? null, e.sugar ?? null, e.satFat ?? null, e.salt ?? null,
+    e.micros && Object.keys(e.micros).length ? JSON.stringify(e.micros) : null,
   );
   if (e.foodId) {
     await db.runAsync("UPDATE foods SET use_count = use_count + 1, last_used = datetime('now') WHERE id = ?", e.foodId);
   }
+}
+
+/** Eintrag ersetzen (z. B. andere Menge). */
+export async function updateLogEntry(db: SQLiteDatabase, e: LogEntry): Promise<void> {
+  if (!e.id) return;
+  await db.runAsync(
+    'UPDATE food_log SET grams = ?, kcal = ?, protein = ?, carbs = ?, fat = ?, fiber = ?, sugar = ?, sat_fat = ?, salt = ?, micros = ?, meal = ? WHERE id = ?',
+    e.grams, e.kcal, e.protein, e.carbs, e.fat, e.fiber ?? null, e.sugar ?? null, e.satFat ?? null, e.salt ?? null,
+    e.micros && Object.keys(e.micros).length ? JSON.stringify(e.micros) : null, e.meal, e.id,
+  );
 }
 
 export async function deleteLogEntry(db: SQLiteDatabase, id: number): Promise<void> {
@@ -463,10 +511,13 @@ export async function dayLog(db: SQLiteDatabase, date: string): Promise<LogEntry
   const rows = await db.getAllAsync<{
     id: number; date: string; meal: Meal; food_id: number | null; name: string; grams: number;
     kcal: number; protein: number; carbs: number; fat: number;
+    fiber: number | null; sugar: number | null; sat_fat: number | null; salt: number | null; micros: string | null;
   }>('SELECT * FROM food_log WHERE date = ? ORDER BY id', date);
   return rows.map((r) => ({
     id: r.id, date: r.date, meal: r.meal, foodId: r.food_id, name: r.name, grams: r.grams,
     kcal: r.kcal, protein: r.protein, carbs: r.carbs, fat: r.fat,
+    fiber: r.fiber ?? undefined, sugar: r.sugar ?? undefined, satFat: r.sat_fat ?? undefined, salt: r.salt ?? undefined,
+    micros: parseMicros(r.micros),
   }));
 }
 
@@ -482,7 +533,7 @@ export async function listSavedMeals(db: SQLiteDatabase): Promise<SavedMeal[]> {
 }
 
 export async function saveMeal(db: SQLiteDatabase, name: string, entries: LogEntry[]): Promise<void> {
-  const items = entries.map(({ foodId, name: n, grams, kcal, protein, carbs, fat }) => ({ foodId, name: n, grams, kcal, protein, carbs, fat }));
+  const items = entries.map(({ id: _id, date: _d, meal: _m, ...rest }) => rest);
   await db.runAsync('INSERT INTO saved_meals (name, items) VALUES (?, ?)', name, JSON.stringify(items));
 }
 
@@ -492,8 +543,10 @@ export async function deleteSavedMeal(db: SQLiteDatabase, id: number): Promise<v
 
 /** Nährwert-Summen je Tag (für Verlauf / Wochenschnitt). */
 export async function dailyTotals(db: SQLiteDatabase, from: string, to: string) {
-  return db.getAllAsync<{ date: string; kcal: number; protein: number; carbs: number; fat: number }>(
-    'SELECT date, SUM(kcal) AS kcal, SUM(protein) AS protein, SUM(carbs) AS carbs, SUM(fat) AS fat FROM food_log WHERE date BETWEEN ? AND ? GROUP BY date ORDER BY date',
+  return db.getAllAsync<{ date: string; kcal: number; protein: number; carbs: number; fat: number; fiber: number; sugar: number; salt: number }>(
+    `SELECT date, SUM(kcal) AS kcal, SUM(protein) AS protein, SUM(carbs) AS carbs, SUM(fat) AS fat,
+       SUM(COALESCE(fiber, 0)) AS fiber, SUM(COALESCE(sugar, 0)) AS sugar, SUM(COALESCE(salt, 0)) AS salt
+     FROM food_log WHERE date BETWEEN ? AND ? GROUP BY date ORDER BY date`,
     from,
     to,
   );
@@ -532,7 +585,7 @@ export async function exportAll(db: SQLiteDatabase): Promise<string> {
     db.getAllAsync('SELECT * FROM daily_load ORDER BY date'),
     db.getAllAsync('SELECT * FROM garmin_activities ORDER BY date'),
     db.getAllAsync('SELECT * FROM zwo_library ORDER BY name'),
-    db.getAllAsync('SELECT * FROM foods ORDER BY id'),
+    db.getAllAsync("SELECT * FROM foods WHERE source != 'bls' ORDER BY id"),
     db.getAllAsync('SELECT * FROM food_log ORDER BY date, id'),
     db.getAllAsync('SELECT * FROM saved_meals ORDER BY id'),
   ]);

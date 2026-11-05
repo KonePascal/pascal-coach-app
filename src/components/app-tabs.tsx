@@ -17,18 +17,18 @@ export default function AppTabs() {
         <NativeTabs.Trigger.Icon sf={{ default: 'house', selected: 'house.fill' }} />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="heute">
-        <NativeTabs.Trigger.Label>Heute</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon sf={{ default: 'sun.max', selected: 'sun.max.fill' }} />
-      </NativeTabs.Trigger>
-
       <NativeTabs.Trigger name="woche">
         <NativeTabs.Trigger.Label>Woche</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="calendar" />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="form">
-        <NativeTabs.Trigger.Label>Form</NativeTabs.Trigger.Label>
+      <NativeTabs.Trigger name="ernaehrung">
+        <NativeTabs.Trigger.Label>Ernährung</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf={{ default: 'fork.knife.circle', selected: 'fork.knife.circle.fill' }} />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="analysen">
+        <NativeTabs.Trigger.Label>Analysen</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="chart.xyaxis.line" />
       </NativeTabs.Trigger>
 

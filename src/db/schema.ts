@@ -1,8 +1,13 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
-import { BASIS_FOODS } from '@/domain/food';
+import blsMicros from '@/assets/data/bls-micros.json';
+import blsRows from '@/assets/data/bls.json';
+import { BASIS_FOODS, fromBlsRow, searchKey, type BlsRow, type Micros } from '@/domain/food';
 import { WEEK_TEMPLATE } from '@/domain/plan';
 import { DEFAULT_SUPPLEMENTS } from '@/domain/supplements';
+
+const BLS_ROWS = blsRows as unknown as BlsRow[];
+const BLS_MICROS = blsMicros as Record<string, Micros>;
 
 /**
  * Migrationen über PRAGMA user_version.
@@ -217,7 +222,72 @@ const MIGRATIONS: ((db: SQLiteDatabase) => Promise<void>)[] = [
       );
     `);
   },
+  // v9 – Ernährung genau: BLS-Lebensmittel, Ballaststoffe/Zucker/ges. Fett/Salz, Mikros, Suchschlüssel
+  async (db) => {
+    await db.execAsync(`
+      ALTER TABLE foods ADD COLUMN code TEXT;
+      ALTER TABLE foods ADD COLUMN fiber REAL;
+      ALTER TABLE foods ADD COLUMN sugar REAL;
+      ALTER TABLE foods ADD COLUMN sat_fat REAL;
+      ALTER TABLE foods ADD COLUMN salt REAL;
+      ALTER TABLE foods ADD COLUMN micros TEXT;
+      ALTER TABLE foods ADD COLUMN search TEXT NOT NULL DEFAULT '';
+      CREATE UNIQUE INDEX IF NOT EXISTS foods_code ON foods(code);
+      ALTER TABLE food_log ADD COLUMN fiber REAL;
+      ALTER TABLE food_log ADD COLUMN sugar REAL;
+      ALTER TABLE food_log ADD COLUMN sat_fat REAL;
+      ALTER TABLE food_log ADD COLUMN salt REAL;
+      ALTER TABLE food_log ADD COLUMN micros TEXT;
+    `);
+    const rows = await db.getAllAsync<{ id: number; name: string; brand: string | null }>('SELECT id, name, brand FROM foods');
+    for (const r of rows) await db.runAsync('UPDATE foods SET search = ? WHERE id = ?', searchKey(`${r.name} ${r.brand ?? ''}`), r.id);
+  },
 ];
+
+/**
+ * BLS-Daten (Bundeslebensmittelschlüssel 4.0) einspielen bzw. aktualisieren, wenn sich die
+ * mitgelieferte Datei geändert hat. Eigene Zählungen (use_count) bleiben erhalten.
+ */
+export const BLS_DATA_VERSION = `bls4.0-1-${Object.keys(BLS_MICROS).length}`;
+
+async function ensureBls(db: SQLiteDatabase): Promise<void> {
+  const row = await db.getFirstAsync<{ value: string }>("SELECT value FROM settings WHERE key = 'kv:blsVersion'");
+  if (row?.value === JSON.stringify(BLS_DATA_VERSION)) return;
+  await db.withTransactionAsync(async () => {
+    const stmt = await db.prepareAsync(
+      `INSERT INTO foods (code, name, kcal, protein, carbs, fat, fiber, sugar, sat_fat, salt, micros, search, source)
+       VALUES ($code, $name, $kcal, $protein, $carbs, $fat, $fiber, $sugar, $sat, $salt, $micros, $search, 'bls')
+       ON CONFLICT(code) DO UPDATE SET name = excluded.name, kcal = excluded.kcal, protein = excluded.protein,
+         carbs = excluded.carbs, fat = excluded.fat, fiber = excluded.fiber, sugar = excluded.sugar,
+         sat_fat = excluded.sat_fat, salt = excluded.salt, micros = excluded.micros, search = excluded.search`,
+    );
+    try {
+      for (const r of BLS_ROWS) {
+        const f = fromBlsRow(r, BLS_MICROS[r[0]]);
+        await stmt.executeAsync({
+          $code: r[0],
+          $name: f.name,
+          $kcal: f.kcal,
+          $protein: f.protein,
+          $carbs: f.carbs,
+          $fat: f.fat,
+          $fiber: f.fiber ?? null,
+          $sugar: f.sugar ?? null,
+          $sat: f.satFat ?? null,
+          $salt: f.salt ?? null,
+          $micros: f.micros ? JSON.stringify(f.micros) : null,
+          $search: searchKey(f.name),
+        });
+      }
+    } finally {
+      await stmt.finalizeAsync();
+    }
+    await db.runAsync(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('kv:blsVersion', ?)",
+      JSON.stringify(BLS_DATA_VERSION),
+    );
+  });
+}
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -230,4 +300,5 @@ export async function migrateDb(db: SQLiteDatabase): Promise<void> {
     version += 1;
     await db.execAsync(`PRAGMA user_version = ${version}`);
   }
+  await ensureBls(db);
 }
