@@ -1,7 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 
 import { nutritionFor } from '../nutrition';
-import { fillWatts, sessionFor } from '../plan';
+import { WEEK_TEMPLATE, fillWatts, sessionFor, upcoming, type WeekPlan } from '../plan';
 import { evaluate } from '../readiness';
 import { DEFAULT_SUPPLEMENTS, isDue, type Supplement } from '../supplements';
 import { DEFAULT_SETTINGS, type CheckIn } from '../types';
@@ -102,5 +102,31 @@ describe('Supplements', () => {
   test('Glycin entfällt nach Alkohol', () => {
     const gly = all.find((s) => s.rule === 'no_alcohol')!;
     expect(isDue(gly, THU, sessionFor(THU, green, 289), ci({ alcohol: true }))).toBe(false);
+  });
+});
+
+describe('Bearbeitbarer Wochenplan', () => {
+  const green = evaluate(ci({ hrv: 100, rhr: 44, sleepScore: 85 }), [], b);
+
+  test('eigener Plan überschreibt die Vorlage', () => {
+    const custom: WeekPlan = {
+      ...WEEK_TEMPLATE,
+      4: { dayType: 'qb', title: 'S2 Sub-Threshold', details: '5 × 10 @ {w:90}', durationMin: 80, tss: 90, avgPct: 0.75 },
+    };
+    const s = sessionFor(THU, green, 289, custom);
+    expect(s.title).toBe('S2 Sub-Threshold');
+    expect(s.details).toBe('5 × 10 @ 260 W');
+  });
+
+  test('Vorschau: Do → Fr + Sa', () => {
+    const next = upcoming(THU, 2, WEEK_TEMPLATE, 289);
+    expect(next.map((d) => d.date.getDay())).toEqual([5, 6]);
+    expect(next[1].caffeine).toBe(true);
+  });
+
+  test('Vorschau über den Monatswechsel', () => {
+    const next = upcoming(new Date(2026, 10, 30), 2, WEEK_TEMPLATE, 289);
+    expect(next[0].date.getDate()).toBe(1);
+    expect(next[0].date.getMonth()).toBe(11);
   });
 });

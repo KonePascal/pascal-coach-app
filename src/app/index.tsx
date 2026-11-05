@@ -23,6 +23,7 @@ import {
   getCheckin,
   getHistory,
   listSupplements,
+  loadPlan,
   loadSettings,
   takenOn,
   toggleTaken,
@@ -31,7 +32,7 @@ import {
 } from '@/db/repo';
 import { isoDate, labelDate } from '@/domain/dates';
 import { nutritionFor } from '@/domain/nutrition';
-import { sessionFor } from '@/domain/plan';
+import { DAY_TYPE_LABEL, WEEK_TEMPLATE, sessionFor, upcoming, type WeekPlan } from '@/domain/plan';
 import { evaluate, fmtHours } from '@/domain/readiness';
 import { isDue, type Supplement } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type CheckIn, type Settings } from '@/domain/types';
@@ -78,6 +79,7 @@ export default function TodayScreen() {
   const date = isoDate(today);
 
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [plan, setPlan] = useState<WeekPlan>(WEEK_TEMPLATE);
   const [stored, setStored] = useState<StoredCheckIn | null>(null);
   const [history, setHistory] = useState<StoredCheckIn[]>([]);
   const [supps, setSupps] = useState<Supplement[]>([]);
@@ -86,14 +88,16 @@ export default function TodayScreen() {
   const [editing, setEditing] = useState(true);
 
   const load = useCallback(async () => {
-    const [s, c, h, sp, t] = await Promise.all([
+    const [s, p, c, h, sp, t] = await Promise.all([
       loadSettings(db),
+      loadPlan(db),
       getCheckin(db, date),
       getHistory(db, date),
       listSupplements(db),
       takenOn(db, date),
     ]);
     setSettings(s);
+    setPlan(p);
     setStored(c);
     setHistory(h);
     setSupps(sp);
@@ -126,7 +130,8 @@ export default function TodayScreen() {
   );
 
   const readiness = evaluate(checkin, history, settings.baselines);
-  const session = sessionFor(today, readiness, settings.ftp);
+  const session = sessionFor(today, readiness, settings.ftp, plan);
+  const next = upcoming(today, 2, plan, settings.ftp);
   const food = nutritionFor(session, readiness, settings, parseNum(form.activityKcal));
   const dueSupps = supps.filter((s) => isDue(s, today, session, checkin));
 
@@ -256,6 +261,26 @@ export default function TodayScreen() {
                   />
                 ))
               )}
+            </Card>
+            <Card title="Nächste Tage">
+              {next.map((d) => (
+                <View key={d.date.toISOString()} style={{ gap: 2, paddingVertical: 4 }}>
+                  <ThemedText type="smallBold">
+                    {labelDate(d.date)} · {d.title}
+                    {d.caffeine ? ' ☕' : ''}
+                  </ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {d.durationMin > 0
+                      ? `${DAY_TYPE_LABEL[d.dayType]} · ${fmtHours(d.durationMin / 60)} · ~${d.tss} TSS${d.gym ? ` · Gym ${d.gym}` : ''}`
+                      : 'Frei'}
+                  </ThemedText>
+                </View>
+              ))}
+              {next.some((d) => d.dayType === 'qa' || d.dayType === 'qb') ? (
+                <ThemedText type="small" themeColor="textSecondary">
+                  Q-Tag voraus: heute Abend früh essen, Bettzeit 22:00 – Schlaf ist der Haupthebel.
+                </ThemedText>
+              ) : null}
             </Card>
           </ScrollView>
         </KeyboardAvoidingView>

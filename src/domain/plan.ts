@@ -51,13 +51,44 @@ export function fillWatts(text: string, ftp: number): string {
   return text.replace(/\{w:(\d+)\}/g, (_, pct: string) => `${Math.round((ftp * Number(pct)) / 100)} W`);
 }
 
-export function plannedFor(date: Date): PlannedDay {
-  return WEEK_TEMPLATE[date.getDay()];
+export type WeekPlan = Record<number, PlannedDay>;
+
+export const DAY_TYPE_LABEL: Record<DayType, string> = {
+  rest: 'Frei',
+  qb: 'Q-B',
+  z2: 'Z2',
+  qa: 'Q-A',
+  long: 'Lang',
+};
+
+/** Reihenfolge Mo → So (Date.getDay()-Werte). */
+export const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
+export const WEEKDAY_NAME: Record<number, string> = {
+  1: 'Montag',
+  2: 'Dienstag',
+  3: 'Mittwoch',
+  4: 'Donnerstag',
+  5: 'Freitag',
+  6: 'Samstag',
+  0: 'Sonntag',
+};
+
+export function plannedFor(date: Date, plan: WeekPlan = WEEK_TEMPLATE): PlannedDay {
+  return plan[date.getDay()] ?? WEEK_TEMPLATE[date.getDay()];
+}
+
+/** Vorschau der nächsten Tage (ohne Ampel – die kennt man erst morgens). */
+export function upcoming(from: Date, days: number, plan: WeekPlan, ftp: number) {
+  return Array.from({ length: days }, (_, i) => {
+    const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() + i + 1);
+    const p = plannedFor(d, plan);
+    return { date: d, ...p, details: fillWatts(p.details, ftp) };
+  });
 }
 
 /** Passt die geplante Einheit an die Ampel an. */
-export function sessionFor(date: Date, r: Readiness, ftp: number): SessionToday {
-  const plan = plannedFor(date);
+export function sessionFor(date: Date, r: Readiness, ftp: number, week: WeekPlan = WEEK_TEMPLATE): SessionToday {
+  const plan = plannedFor(date, week);
   const base: SessionToday = { ...plan, details: fillWatts(plan.details, ftp), adjusted: false };
   const isQ = plan.dayType === 'qa' || plan.dayType === 'qb';
 

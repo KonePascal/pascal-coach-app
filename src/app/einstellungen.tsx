@@ -1,14 +1,22 @@
 import { useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Button, Card, NumberField, Toggle, parseNum } from '@/components/ui';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { deleteSupplement, listSupplements, loadSettings, saveSettings, saveSupplement } from '@/db/repo';
+import {
+  deleteSupplement,
+  exportAll,
+  listSupplements,
+  loadPlan,
+  loadSettings,
+  saveSettings,
+  saveSupplement,
+} from '@/db/repo';
 import { parseTime } from '@/domain/dates';
 import { RULE_LABEL, type Supplement, type SupplementRule } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type Settings } from '@/domain/types';
@@ -89,7 +97,7 @@ export default function SettingsScreen() {
       for (const id of removed) await deleteSupplement(db, id);
       for (const { key: _key, ...x } of supps) await saveSupplement(db, { ...x, name: x.name.trim() });
     });
-    const count = await rescheduleAll(next, await listSupplements(db));
+    const count = await rescheduleAll(next, await listSupplements(db), await loadPlan(db));
     await load();
     Alert.alert('Gespeichert', next.remindersOn ? `${count} Erinnerungen geplant.` : 'Erinnerungen sind aus.');
   };
@@ -189,6 +197,20 @@ export default function SettingsScreen() {
             </Card>
 
             <Button title="Speichern" onPress={() => void save()} />
+
+            <Card title="Backup">
+              <ThemedText type="small" themeColor="textSecondary">
+                Deine Daten liegen nur auf diesem iPhone. Exportiere sie ab und zu (z. B. in Notizen oder Dateien
+                sichern).
+              </ThemedText>
+              <Button
+                title="Daten exportieren"
+                variant="secondary"
+                onPress={() =>
+                  void exportAll(db).then((json) => Share.share({ message: json, title: 'Coach-Backup' }))
+                }
+              />
+            </Card>
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>

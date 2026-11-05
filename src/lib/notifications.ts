@@ -1,7 +1,7 @@
 import * as Notifications from 'expo-notifications';
 
 import { parseTime } from '@/domain/dates';
-import { WEEK_TEMPLATE } from '@/domain/plan';
+import { WEEK_TEMPLATE, type WeekPlan } from '@/domain/plan';
 import type { Supplement } from '@/domain/supplements';
 import type { Settings } from '@/domain/types';
 
@@ -27,9 +27,13 @@ const toExpoWeekday = (jsDay: number) => jsDay + 1;
 /**
  * Plant alle Erinnerungen neu: Check-in täglich + Supplements nach Regel.
  * Regelbasierte Supplements (Koffein, Training) laufen wöchentlich an den
- * passenden Wochentagen der Wochenvorlage.
+ * passenden Wochentagen des gespeicherten Wochenplans.
  */
-export async function rescheduleAll(settings: Settings, supplements: Supplement[]): Promise<number> {
+export async function rescheduleAll(
+  settings: Settings,
+  supplements: Supplement[],
+  plan: WeekPlan = WEEK_TEMPLATE,
+): Promise<number> {
   await Notifications.cancelAllScheduledNotificationsAsync();
   if (!settings.remindersOn) return 0;
 
@@ -50,8 +54,8 @@ export async function rescheduleAll(settings: Settings, supplements: Supplement[
     const content = { title: s.name, body: `${s.dose} – abhaken in der App` };
 
     if (s.rule === 'caffeine' || s.rule === 'training') {
-      for (const [day, plan] of Object.entries(WEEK_TEMPLATE)) {
-        const due = s.rule === 'caffeine' ? !!plan.caffeine : plan.durationMin > 0;
+      for (const [day, p] of Object.entries(plan)) {
+        const due = s.rule === 'caffeine' ? !!p.caffeine : p.durationMin > 0;
         if (!due) continue;
         await Notifications.scheduleNotificationAsync({
           content,

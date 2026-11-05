@@ -1,5 +1,6 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
+import { WEEK_TEMPLATE } from '@/domain/plan';
 import { DEFAULT_SUPPLEMENTS } from '@/domain/supplements';
 
 /**
@@ -56,6 +57,18 @@ const MIGRATIONS: ((db: SQLiteDatabase) => Promise<void>)[] = [
         s.rule,
         s.active ? 1 : 0,
       );
+    }
+  },
+  // v2 – bearbeitbarer Wochenplan (ein Eintrag pro Wochentag, 0 = So … 6 = Sa)
+  async (db) => {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS plan_days (
+        weekday INTEGER PRIMARY KEY NOT NULL CHECK (weekday BETWEEN 0 AND 6),
+        data    TEXT NOT NULL
+      );
+    `);
+    for (const [day, p] of Object.entries(WEEK_TEMPLATE)) {
+      await db.runAsync('INSERT OR IGNORE INTO plan_days (weekday, data) VALUES (?, ?)', Number(day), JSON.stringify(p));
     }
   },
 ];

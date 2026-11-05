@@ -1,5 +1,6 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
+import { WEEK_TEMPLATE, type PlannedDay, type WeekPlan } from '@/domain/plan';
 import type { Supplement, SupplementRule } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type CheckIn, type Light, type Settings } from '@/domain/types';
 
@@ -105,6 +106,41 @@ export async function upsertCheckin(
     c.activityKcal ?? null,
     light,
     c.note ?? null,
+  );
+}
+
+// ---------- Wochenplan ----------
+
+export async function loadPlan(db: SQLiteDatabase): Promise<WeekPlan> {
+  const rows = await db.getAllAsync<{ weekday: number; data: string }>('SELECT weekday, data FROM plan_days');
+  const plan: WeekPlan = { ...WEEK_TEMPLATE };
+  for (const r of rows) plan[r.weekday] = { ...WEEK_TEMPLATE[r.weekday], ...(JSON.parse(r.data) as PlannedDay) };
+  return plan;
+}
+
+export async function savePlanDay(db: SQLiteDatabase, weekday: number, day: PlannedDay): Promise<void> {
+  await db.runAsync(
+    'INSERT INTO plan_days (weekday, data) VALUES (?, ?) ON CONFLICT(weekday) DO UPDATE SET data = excluded.data',
+    weekday,
+    JSON.stringify(day),
+  );
+}
+
+// ---------- Backup ----------
+
+/** Kompletter Datenexport als JSON (für Backup / späteren Import). */
+export async function exportAll(db: SQLiteDatabase): Promise<string> {
+  const [settings, checkins, supplements, supplementLog, planDays] = await Promise.all([
+    db.getAllAsync('SELECT * FROM settings'),
+    db.getAllAsync('SELECT * FROM checkins ORDER BY date'),
+    db.getAllAsync('SELECT * FROM supplements'),
+    db.getAllAsync('SELECT * FROM supplement_log ORDER BY date'),
+    db.getAllAsync('SELECT * FROM plan_days ORDER BY weekday'),
+  ]);
+  return JSON.stringify(
+    { app: 'coach', exportedAt: new Date().toISOString(), settings, checkins, supplements, supplementLog, planDays },
+    null,
+    1,
   );
 }
 

@@ -21,8 +21,9 @@ Später als richtige App (ohne Laptop): Apple Developer Account + `npx eas-cli@l
 | Tab | Inhalt |
 |---|---|
 | **Heute** | HRV, Ruhepuls, Schlaf-Score/-dauer, Bevel-Erholung, Gewicht, Infekt-/Alkohol-Schalter → Ampel nach Entscheidungshierarchie, angepasste Einheit mit Watt aus FTP, kcal/KH-Ziel, fällige Supplements zum Abhaken |
+| **Plan** | Wochenplan Mo–So bearbeiten: Typ, Titel, Details mit `{w:%}`-Platzhaltern, Dauer, TSS, Ø-Leistung, Gym A/B, Koffein |
 | **Verlauf** | 7-Tage-Schnitt (HRV, Ruhepuls, Schlaf, Gewicht inkl. Trend zur Vorwoche) und alle Check-ins |
-| **Einstellungen** | FTP, Gewicht, Erhalt/Defizit/Makros, Ampel-Baselines, Erinnerungen, Supplements bearbeiten |
+| **Einstellungen** | FTP, Gewicht, Erhalt/Defizit/Makros, Ampel-Baselines, Erinnerungen, Supplements bearbeiten, Backup-Export (JSON) |
 
 ## Regeln (in `src/domain/`)
 
@@ -44,6 +45,7 @@ npx expo lint
 ## Roadmap
 
 - [x] v1: Morgen-Check, Ampel, Einheit, kcal/KH, Supplements + Erinnerungen
+- [x] Sprint 1: Wochenplan bearbeitbar, Vorschau nächste 2 Tage, Backup-Export
 - [ ] v2: Ernährungstracking mit Barcode-Scanner (Open Food Facts), eigene Rezepte (MCI-Ersatz)
 - [ ] v3: Gym-Log (Oberkörper A/B), Rad-Daten über Apple Health / Strava
 - [ ] v4: Wochenplan in der App bearbeiten, Cloud-Sync (Supabase), Auswertungen
