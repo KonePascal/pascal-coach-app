@@ -430,7 +430,7 @@ export default function TodayScreen() {
 
             <Card title="Essen heute">
               <MacroBars eaten={sum(foodLog)} target={{ kcal: food.kcal, protein: food.proteinG, carbs: food.carbsG, fat: food.fatG }} />
-              <Button title="🍽️ Essen eintragen" onPress={() => router.push({ pathname: '/essen', params: { date } })} />
+              <Button title="🍽️ Essen eintragen" onPress={() => router.navigate('/ernaehrung')} />
               <Row
                 label="Rechnung"
                 value={`${settings.maintenanceKcal} + ${food.activityKcal} Aktivität${food.deficit ? ` − ${food.deficit}` : ''}`}

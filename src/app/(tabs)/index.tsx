@@ -73,18 +73,20 @@ function Chip({ ok, text }: { ok: Light; text: string }) {
   );
 }
 
-function MetricTile({ label, value, delta, color }: { label: string; value: number; delta: number; color: string }) {
+function MetricTile({ k, label, value, delta, color }: { k: 'ctl' | 'tsb' | 'atl'; label: string; value: number; delta: number; color: string }) {
   return (
-    <View style={[styles.metric, { borderColor: color + '55' }]}>
+    <Pressable
+      onPress={() => router.push({ pathname: '/kennzahl/[key]', params: { key: k } })}
+      style={[styles.metric, { borderColor: color + '55' }]}>
       <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 4 }}>
         <ThemedText style={{ color, fontSize: 34, lineHeight: 40, fontWeight: '700' }}>{r0(value)}</ThemedText>
         <ThemedText style={{ color, fontSize: 16 }}>{arrow(delta)}</ThemedText>
       </View>
       <View style={{ height: 2, backgroundColor: color, marginVertical: 4 }} />
       <ThemedText type="small" style={{ color }}>
-        {label}
+        {label} ›
       </ThemedText>
-    </View>
+    </Pressable>
   );
 }
 
@@ -275,7 +277,7 @@ export default function StartScreen() {
               ) : null}
 
               {target ? (
-                <Pressable onPress={() => router.push('/essen')} style={styles.dayRow}>
+                <Pressable onPress={() => router.navigate('/ernaehrung')} style={styles.dayRow}>
                   <ThemedText style={styles.dayIcon}>🍽️</ThemedText>
                   <ThemedText type="small" style={{ flex: 1 }}>
                     <ThemedText type="smallBold">{Math.max(0, target.kcal - data.eaten.kcal)} kcal</ThemedText> übrig · KH{' '}
@@ -332,12 +334,12 @@ export default function StartScreen() {
           </ThemedText>
           {tRow ? (
             <View style={styles.metrics}>
-              <MetricTile label="Fitness" value={tRow.ctl} delta={tRow.ctl - (yRow?.ctl ?? tRow.ctl)} color={PMC_COLORS.ctl} />
-              <MetricTile label="Form" value={tRow.tsb} delta={tRow.tsb - (yRow?.tsb ?? tRow.tsb)} color="#FF8A00" />
-              <MetricTile label="Ermüdung" value={tRow.atl} delta={tRow.atl - (yRow?.atl ?? tRow.atl)} color="#E0368C" />
+              <MetricTile k="ctl" label="Fitness" value={tRow.ctl} delta={tRow.ctl - (yRow?.ctl ?? tRow.ctl)} color={PMC_COLORS.ctl} />
+              <MetricTile k="tsb" label="Form" value={tRow.tsb} delta={tRow.tsb - (yRow?.tsb ?? tRow.tsb)} color="#FF8A00" />
+              <MetricTile k="atl" label="Ermüdung" value={tRow.atl} delta={tRow.atl - (yRow?.atl ?? tRow.atl)} color="#E0368C" />
             </View>
           ) : null}
-          <Pressable onPress={() => router.navigate('/form')}>
+          <Pressable onPress={() => router.navigate({ pathname: '/kennzahl/[key]', params: { key: 'ctl' } })}>
             <Card>
               <ThemedText type="small" style={{ color: PMC_COLORS.ctl }}>
                 Fitness-Aufbau-Tempo {ramp !== null ? `· ${ramp >= 0 ? '+' : ''}${ramp.toFixed(1)} CTL/7 T.` : ''}
@@ -364,7 +366,7 @@ export default function StartScreen() {
             </Card>
           </Pressable>
 
-          <Pressable onPress={() => router.push('/analyse')}>
+          <Pressable onPress={() => router.navigate('/analysen')}>
             <Card>
               <View style={styles.between}>
                 <ThemedText type="smallBold">📈 Analysen</ThemedText>
@@ -521,7 +523,7 @@ export default function StartScreen() {
 
           {/* Ernährung kurz */}
           {data && target ? (
-            <Pressable onPress={() => router.push('/essen')}>
+            <Pressable onPress={() => router.navigate('/ernaehrung')}>
               <Card>
                 <View style={styles.between}>
                   <ThemedText type="smallBold">🍽️ Ernährung</ThemedText>
