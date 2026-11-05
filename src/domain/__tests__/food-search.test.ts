@@ -33,3 +33,18 @@ describe('Nährwerte mit Zusatzwerten', () => {
     expect(extraTargets(2900)).toEqual({ fiber: { min: 41 }, sugar: { max: 73 }, satFat: { max: 32 }, salt: { max: 6 } });
   });
 });
+
+import { logStreak, macroShares, onTarget } from '../food';
+import { addDays } from '../pmc';
+
+describe('Ernährung: Serie & Anteile', () => {
+  test('Serie zählt zusammenhängende Tage', () => {
+    expect(logStreak(['2026-11-02', '2026-11-03', '2026-11-04'], '2026-11-05', addDays)).toBe(3);
+    expect(logStreak(['2026-11-03', '2026-11-05'], '2026-11-05', addDays)).toBe(1);
+  });
+  test('Zielkorridor und kcal-Anteile', () => {
+    expect(onTarget(2300, 2420)).toBe(true);
+    expect(onTarget(2000, 2420)).toBe(false);
+    expect(macroShares({ kcal: 60, protein: 10, carbs: 5, fat: 0.1 })).toEqual({ protein: 66, carbs: 33, fat: 1 });
+  });
+});

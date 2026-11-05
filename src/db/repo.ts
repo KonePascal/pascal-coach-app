@@ -368,7 +368,7 @@ export async function workoutHistory(db: SQLiteDatabase, limit = 60): Promise<Lo
 
 // ---------- Ernährung ----------
 
-export type StoredFood = Food & { id: number; useCount: number };
+export type StoredFood = Food & { id: number; useCount: number; favorite: boolean };
 
 interface FoodRow {
   id: number;
@@ -389,6 +389,7 @@ interface FoodRow {
   serving_label: string | null;
   source: Food['source'];
   use_count: number;
+  favorite?: number;
 }
 
 const parseMicros = (s: string | null): Micros | null => {
@@ -419,6 +420,7 @@ const toFood = (r: FoodRow): StoredFood => ({
   servingLabel: r.serving_label,
   source: r.source,
   useCount: r.use_count,
+  favorite: r.favorite === 1,
 });
 
 /** Eigene, Basis- und gescannte Lebensmittel (ohne die 7.000 BLS-Einträge). */
@@ -437,6 +439,50 @@ export async function searchFoods(db: SQLiteDatabase, query: string, limit = 60)
   const sql = buildFoodSearch(groups);
   const rows = await db.getAllAsync<FoodRow>(sql.text, ...sql.params, limit);
   return rows.map(toFood);
+}
+
+export async function foodById(db: SQLiteDatabase, id: number): Promise<StoredFood | null> {
+  const r = await db.getFirstAsync<FoodRow>('SELECT * FROM foods WHERE id = ?', id);
+  return r ? toFood(r) : null;
+}
+
+export async function toggleFavorite(db: SQLiteDatabase, id: number, on: boolean): Promise<void> {
+  await db.runAsync('UPDATE foods SET favorite = ? WHERE id = ?', on ? 1 : 0, id);
+}
+
+export async function favoriteFoods(db: SQLiteDatabase): Promise<StoredFood[]> {
+  return (await db.getAllAsync<FoodRow>('SELECT * FROM foods WHERE favorite = 1 ORDER BY name')).map(toFood);
+}
+
+export async function frequentFoods(db: SQLiteDatabase, limit = 40): Promise<StoredFood[]> {
+  return (await db.getAllAsync<FoodRow>('SELECT * FROM foods WHERE use_count > 0 ORDER BY use_count DESC, last_used DESC LIMIT ?', limit)).map(toFood);
+}
+
+/** Zuletzt gegessen, nach Tagen gruppiert (je Lebensmittel und Tag nur der letzte Eintrag). */
+export async function recentByDay(db: SQLiteDatabase, from: string): Promise<{ date: string; items: LogEntry[] }[]> {
+  const rows = await dayLogRange(db, from);
+  const seen = new Set<string>();
+  const out = new Map<string, LogEntry[]>();
+  for (const e of rows) {
+    const k = `${e.date}|${e.foodId ?? e.name}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.set(e.date, [...(out.get(e.date) ?? []), e]);
+  }
+  return [...out.entries()].map(([date, items]) => ({ date, items }));
+}
+
+/** Tage mit mindestens einem Eintrag (für Wochenleiste und Serie). */
+export async function loggedDates(db: SQLiteDatabase, from: string): Promise<string[]> {
+  const rows = await db.getAllAsync<{ date: string }>('SELECT DISTINCT date FROM food_log WHERE date >= ? ORDER BY date', from);
+  return rows.map((r) => r.date);
+}
+
+/** Alle Einträge eines Tages auf einen anderen Tag kopieren („Von gestern übernehmen“). */
+export async function copyDay(db: SQLiteDatabase, from: string, to: string): Promise<number> {
+  const items = await dayLog(db, from);
+  for (const e of items) await logFood(db, { ...e, id: undefined, date: to });
+  return items.length;
 }
 
 export async function recentFoods(db: SQLiteDatabase, limit = 15): Promise<StoredFood[]> {
@@ -507,12 +553,21 @@ export async function deleteLogEntry(db: SQLiteDatabase, id: number): Promise<vo
   await db.runAsync('DELETE FROM food_log WHERE id = ?', id);
 }
 
+type LogRow = {
+  id: number; date: string; meal: Meal; food_id: number | null; name: string; grams: number;
+  kcal: number; protein: number; carbs: number; fat: number;
+  fiber: number | null; sugar: number | null; sat_fat: number | null; salt: number | null; micros: string | null;
+};
+
 export async function dayLog(db: SQLiteDatabase, date: string): Promise<LogEntry[]> {
-  const rows = await db.getAllAsync<{
-    id: number; date: string; meal: Meal; food_id: number | null; name: string; grams: number;
-    kcal: number; protein: number; carbs: number; fat: number;
-    fiber: number | null; sugar: number | null; sat_fat: number | null; salt: number | null; micros: string | null;
-  }>('SELECT * FROM food_log WHERE date = ? ORDER BY id', date);
+  return toEntries(await db.getAllAsync<LogRow>('SELECT * FROM food_log WHERE date = ? ORDER BY id', date));
+}
+
+async function dayLogRange(db: SQLiteDatabase, from: string): Promise<LogEntry[]> {
+  return toEntries(await db.getAllAsync<LogRow>('SELECT * FROM food_log WHERE date >= ? AND grams > 0 ORDER BY date DESC, id DESC', from));
+}
+
+function toEntries(rows: LogRow[]): LogEntry[] {
   return rows.map((r) => ({
     id: r.id, date: r.date, meal: r.meal, foodId: r.food_id, name: r.name, grams: r.grams,
     kcal: r.kcal, protein: r.protein, carbs: r.carbs, fat: r.fat,
@@ -563,6 +618,23 @@ export async function saveWeights(db: SQLiteDatabase, list: { date: string; kg: 
 
 export async function latestGarminWeight(db: SQLiteDatabase): Promise<{ date: string; kg: number } | null> {
   return db.getFirstAsync<{ date: string; kg: number }>('SELECT date, kg FROM weights ORDER BY date DESC LIMIT 1');
+}
+
+/** Gewicht von Hand – überschreibt nie einen Garmin-Wert desselben Tages. */
+export async function setManualWeight(db: SQLiteDatabase, date: string, kg: number): Promise<void> {
+  await db.runAsync(
+    "INSERT INTO weights (date, kg, source) VALUES (?, ?, 'manual') ON CONFLICT(date) DO UPDATE SET kg = excluded.kg WHERE weights.source != 'garmin'",
+    date,
+    kg,
+  );
+}
+
+/** Gewicht an einem Tag bzw. der letzte Wert davor, mit Quelle. */
+export async function weightOn(db: SQLiteDatabase, date: string): Promise<{ date: string; kg: number; source: string } | null> {
+  return db.getFirstAsync<{ date: string; kg: number; source: string }>(
+    'SELECT date, kg, source FROM weights WHERE date <= ? ORDER BY date DESC LIMIT 1',
+    date,
+  );
 }
 
 /** Gewicht je Tag: Garmin hat Vorrang; alte Handeinträge füllen nur Lücken. */

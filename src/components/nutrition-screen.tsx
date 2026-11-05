@@ -1,106 +1,72 @@
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  TextInput,
-  View,
-} from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { MacroBars } from '@/components/macro-bars';
+import { Gauge, MacroLine, N, NutrientTile, Ring, RoundButton, SectionLabel, WeekStrip } from '@/components/nutrition/kit';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Button, Card, NumberField, parseNum } from '@/components/ui';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import {
-  dayLog,
-  deleteLogEntry,
-  deleteSavedMeal,
-  foodByBarcode,
-  listFoods,
-  listSavedMeals,
-  logFood,
-  recentFoods,
-  saveFood,
-  saveMeal,
-  searchFoods,
-  setServing,
-  updateLogEntry,
-  type SavedMeal,
-  type StoredFood,
-} from '@/db/repo';
-import { fromIso, isoDate, labelDate } from '@/domain/dates';
-import {
-  MEALS,
-  MICROS,
-  extraTargets,
-  kcalFromMacros,
-  rescaleEntry,
-  scale,
-  searchLocal,
-  sum,
-  sumNutrients,
-  type Food,
-  type LogEntry,
-  type Meal,
-  type Nutrients,
-} from '@/domain/food';
+import { copyDay, dayLog, listSavedMeals, loggedDates, logFood, setManualWeight, weightOn, type SavedMeal } from '@/db/repo';
+import { isoDate } from '@/domain/dates';
+import { MEALS, MICROS, extraTargets, logStreak, onTarget, sum, sumNutrients, type LogEntry, type Meal } from '@/domain/food';
 import { addDays } from '@/domain/pmc';
-import { useDayTarget } from '@/hooks/use-day-target';
+import { computeDayTarget, type DayTarget } from '@/hooks/use-day-target';
 import { useTheme } from '@/hooks/use-theme';
-import { productByBarcode, searchOff } from '@/lib/openfoodfacts';
 
-type Sheet = 'search' | 'amount' | 'scan' | 'custom' | 'quick' | null;
+/** Anteil des Tagesziels je Mahlzeit – nur für die Füllung der Ringe. */
+const MEAL_SHARE: Record<Meal, number> = { fruehstueck: 0.25, mittag: 0.35, abend: 0.3, snack: 0.1, training: 0.15 };
 
 export default function NutritionScreen() {
   const db = useSQLiteContext();
   const theme = useTheme();
-  const params = useLocalSearchParams<{ date?: string; meal?: Meal }>();
-  const [date, setDate] = useState(params.date ?? isoDate(new Date()));
+  const today = isoDate(new Date());
+  const [date, setDate] = useState(today);
   const [entries, setEntries] = useState<LogEntry[]>([]);
-  const { target, load: loadTarget } = useDayTarget();
-  const [meal, setMeal] = useState<Meal>(params.meal ?? defaultMeal());
-  const [sheet, setSheet] = useState<Sheet>(null);
-
-  // Suche
-  const [foods, setFoods] = useState<StoredFood[]>([]);
-  const [recent, setRecent] = useState<StoredFood[]>([]);
+  const [yesterday, setYesterday] = useState<LogEntry[]>([]);
+  const [target, setTarget] = useState<DayTarget | null>(null);
+  const [logged, setLogged] = useState<Set<string>>(new Set());
+  const [hit, setHit] = useState<Set<string>>(new Set());
+  const [streak, setStreak] = useState(0);
+  const [expanded, setExpanded] = useState(false);
   const [saved, setSaved] = useState<SavedMeal[]>([]);
-  const [query, setQuery] = useState('');
-  const [online, setOnline] = useState<Food[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<'recent' | 'all' | 'meals'>('recent');
-  const [hits, setHits] = useState<StoredFood[]>([]);
-
-  // Menge
-  const [picked, setPicked] = useState<Food | null>(null);
-  const [grams, setGrams] = useState('100');
-
-  // Eigenes Lebensmittel / Schnell-Eintrag
-  const [custom, setCustom] = useState(EMPTY_CUSTOM);
-
-  // Scanner
-  const [permission, requestPermission] = useCameraPermissions();
-  const scanned = useRef(false);
+  const [weight, setWeight] = useState<{ kg: number; source: string; date: string } | null>(null);
+  const [draftKg, setDraftKg] = useState<number | null>(null);
+  const targetCache = useRef(new Map<string, number>());
 
   const reload = useCallback(async () => {
-    const [e, f, r, m] = await Promise.all([dayLog(db, date), listFoods(db), recentFoods(db), listSavedMeals(db)]);
+    const [e, y, t, dates, meals, w] = await Promise.all([
+      dayLog(db, date),
+      dayLog(db, addDays(date, -1)),
+      computeDayTarget(db, date),
+      loggedDates(db, addDays(today, -400)),
+      listSavedMeals(db),
+      weightOn(db, date),
+    ]);
     setEntries(e);
-    setFoods(f);
-    setRecent(r);
-    setSaved(m);
-    await loadTarget(date);
-  }, [db, date, loadTarget]);
+    setYesterday(y);
+    setTarget(t);
+    setSaved(meals);
+    setWeight(w);
+    setDraftKg(null);
+    setLogged(new Set(dates));
+    setStreak(logStreak(dates, today, addDays));
+    targetCache.current.set(date, t.kcal);
+
+    // Haken für Tage im Zielkorridor (±10 % kcal) – nur für Tage mit Einträgen der letzten 6 Wochen
+    const recent = dates.filter((d) => d >= addDays(today, -42) && d < today);
+    const ok = new Set<string>();
+    for (const d of recent) {
+      let tk = targetCache.current.get(d);
+      if (tk === undefined) {
+        tk = (await computeDayTarget(db, d)).kcal;
+        targetCache.current.set(d, tk);
+      }
+      if (onTarget(sum(await dayLog(db, d)).kcal, tk)) ok.add(d);
+    }
+    setHit(ok);
+  }, [db, date, today]);
 
   useFocusEffect(
     useCallback(() => {
@@ -108,641 +74,247 @@ export default function NutritionScreen() {
     }, [reload]),
   );
 
-  // Suche über alle Lebensmittel (eigene + Bundeslebensmittelschlüssel), leicht verzögert
+  // Gewicht: kurz nach dem letzten Tippen speichern
   useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setHits([]);
-      return;
-    }
-    const t = setTimeout(() => void searchFoods(db, q).then(setHits), 150);
+    if (draftKg === null) return;
+    const t = setTimeout(() => void setManualWeight(db, date, draftKg).then(reload), 900);
     return () => clearTimeout(t);
-  }, [db, query]);
+  }, [db, date, draftKg, reload]);
 
   const eaten = sumNutrients(entries);
+  const goals = target ? extraTargets(target.kcal) : null;
+  const garminToday = weight?.source === 'garmin' && weight.date === date;
+  const shownKg = draftKg ?? weight?.kg ?? null;
 
-  const openAdd = (m: Meal) => {
-    setMeal(m);
-    setQuery('');
-    setOnline([]);
-    setTab(recent.length ? 'recent' : 'all');
-    setSheet('search');
-  };
-
-  const pick = (f: Food) => {
-    setPicked(f);
-    setGrams(String(f.servingG ?? 100));
-    setSheet('amount');
-  };
-
-  const add = async () => {
-    if (!picked) return;
-    const g = parseNum(grams);
-    if (!g || g <= 0) return;
-    const foodId = picked.id ?? (await saveFood(db, picked));
-    await logFood(db, { date, meal, foodId, name: picked.brand ? `${picked.name} (${picked.brand})` : picked.name, grams: g, ...scale(picked, g) });
-    setSheet(null);
-    setPicked(null);
-    await reload();
-  };
-
-  const searchOnline = async () => {
-    if (!query.trim()) return;
-    setBusy(true);
-    try {
-      setOnline(await searchOff(query.trim()));
-    } catch (e) {
-      Alert.alert('Suche fehlgeschlagen', e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onScan = async (code: string) => {
-    if (scanned.current) return;
-    scanned.current = true;
-    setBusy(true);
-    try {
-      const local = await foodByBarcode(db, code);
-      const f = local ?? (await productByBarcode(code));
-      if (f) {
-        pick(f);
-      } else {
-        Alert.alert('Nicht gefunden', `Barcode ${code} ist nicht in Open Food Facts. Werte von der Packung eintragen?`, [
-          { text: 'Abbrechen', style: 'cancel', onPress: () => setSheet('search') },
-          {
-            text: 'Eintragen',
-            onPress: () => {
-              setCustom(EMPTY_CUSTOM);
-              setPicked({ name: '', barcode: code, kcal: 0, protein: 0, carbs: 0, fat: 0, source: 'own' });
-              setSheet('custom');
-            },
-          },
-        ]);
-      }
-    } catch (e) {
-      Alert.alert('Fehler', e instanceof Error ? e.message : String(e));
-      setSheet('search');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const startScan = async () => {
-    if (!permission?.granted) {
-      const p = await requestPermission();
-      if (!p.granted) {
-        Alert.alert('Kamera', 'Erlaube den Kamerazugriff in den iPhone-Einstellungen, um Barcodes zu scannen.');
-        return;
-      }
-    }
-    scanned.current = false;
-    setSheet('scan');
-  };
-
-  const saveCustom = async () => {
-    const p = parseNum(custom.protein) ?? 0;
-    const c = parseNum(custom.carbs) ?? 0;
-    const f = parseNum(custom.fat) ?? 0;
-    const kcal = parseNum(custom.kcal) ?? kcalFromMacros(p, c, f);
-    if (!custom.name.trim() || !kcal) {
-      Alert.alert('Bitte prüfen', 'Name und kcal (oder Makros) je 100 g angeben.');
-      return;
-    }
-    const food: Food = {
-      name: custom.name.trim(),
-      barcode: picked?.barcode ?? null,
-      kcal,
-      protein: p,
-      carbs: c,
-      fat: f,
-      fiber: parseNum(custom.fiber),
-      sugar: parseNum(custom.sugar),
-      satFat: parseNum(custom.satFat),
-      salt: parseNum(custom.salt),
-      servingG: parseNum(custom.serving),
-      source: 'own',
-    };
-    const id = await saveFood(db, food);
-    pick({ ...food, id });
-  };
-
-  const saveQuick = async () => {
-    const p = parseNum(custom.protein) ?? 0;
-    const c = parseNum(custom.carbs) ?? 0;
-    const f = parseNum(custom.fat) ?? 0;
-    const kcal = parseNum(custom.kcal) ?? kcalFromMacros(p, c, f);
-    if (!kcal) return;
-    await logFood(db, {
-      date,
-      meal,
-      foodId: null,
-      name: custom.name.trim() || 'Schnell-Eintrag',
-      grams: 0,
-      kcal,
-      protein: p,
-      carbs: c,
-      fat: f,
-      fiber: parseNum(custom.fiber) ?? undefined,
-      sugar: parseNum(custom.sugar) ?? undefined,
-      salt: parseNum(custom.salt) ?? undefined,
-    });
-    setSheet(null);
-    await reload();
-  };
-
-  const editEntry = (e: LogEntry) => {
-    if (!e.grams) {
-      removeEntry(e);
-      return;
-    }
-    Alert.prompt(
-      e.name,
-      'Neue Menge in g (0 = löschen)',
-      async (v) => {
-        const g = parseNum(v ?? '');
-        if (g === null) return;
-        if (g <= 0) await deleteLogEntry(db, e.id!);
-        else await updateLogEntry(db, rescaleEntry(e, g / e.grams));
-        await reload();
-      },
-      'plain-text',
-      String(e.grams),
-      'decimal-pad',
-    );
-  };
-
-  const rememberServing = (f: Food & { id?: number }) => {
-    const g = parseNum(grams);
-    if (!f.id || !g) return;
-    Alert.prompt('Portion merken', `Name für ${g} g, z. B. „1 Scheibe“`, async (label) => {
-      if (!label?.trim()) return;
-      await setServing(db, f.id!, g, `${label.trim()} (${g} g)`);
-      setPicked({ ...f, servingG: g, servingLabel: `${label.trim()} (${g} g)` });
-      await reload();
-    });
-  };
-
-  const removeEntry = (e: LogEntry) =>
-    Alert.alert('Eintrag löschen?', e.name, [
+  const copyYesterday = () =>
+    Alert.alert('Von gestern übernehmen?', `${yesterday.length} Einträge von gestern werden für diesen Tag eingetragen.`, [
       { text: 'Abbrechen', style: 'cancel' },
-      { text: 'Löschen', style: 'destructive', onPress: () => void deleteLogEntry(db, e.id!).then(reload) },
+      { text: 'Übernehmen', onPress: () => void copyDay(db, addDays(date, -1), date).then(reload) },
     ]);
 
-  const saveAsMeal = (m: Meal) => {
-    const items = entries.filter((e) => e.meal === m);
-    if (!items.length) return;
-    Alert.prompt('Als Mahlzeit speichern', 'Name, z. B. „Meal-Prep Hähnchen-Reis“', async (name) => {
-      if (!name?.trim()) return;
-      await saveMeal(db, name.trim(), items);
-      await reload();
-    });
-  };
-
-  const logSavedMeal = (sm: SavedMeal) =>
-    Alert.prompt(
-      sm.name,
-      'Wie viele Portionen?',
-      async (v) => {
-        const factor = parseNum(v ?? '1') ?? 1;
-        for (const it of sm.items) await logFood(db, { ...rescaleEntry(it, factor), date, meal });
-        setSheet(null);
-        await reload();
-      },
-      'plain-text',
-      '1',
-      'decimal-pad',
-    );
-
-  const copyYesterday = async (m: Meal) => {
-    const prev = (await dayLog(db, addDays(date, -1))).filter((e) => e.meal === m);
-    if (!prev.length) {
-      Alert.alert('Gestern leer', 'Für diese Mahlzeit gibt es gestern keine Einträge.');
-      return;
-    }
-    for (const e of prev) await logFood(db, { ...e, id: undefined, date });
+  const copyMeal = async (m: Meal) => {
+    for (const e of yesterday.filter((x) => x.meal === m)) await logFood(db, { ...e, id: undefined, date });
     await reload();
   };
 
-  const q = query.trim();
-  const list: (Food & { useCount?: number })[] =
-    q.length >= 2 ? hits : tab === 'recent' ? recent : tab === 'all' ? (q ? searchLocal(foods, q) : foods) : [];
-  const preview = picked ? scale(picked, parseNum(grams) ?? 0) : null;
+  const explain = () =>
+    target &&
+    Alert.alert(
+      'So entsteht dein Ziel',
+      [
+        `Erhalt + ${target.activityKcal} kcal Training${target.deficit ? ` − ${target.deficit} kcal Defizit` : ''} = ${target.kcal} kcal`,
+        `Protein ${target.proteinG} g · KH ${target.carbsG} g · Fett ${target.fatG} g`,
+        ...target.notes,
+      ].join('\n\n'),
+    );
 
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safe} edges={['top']}>
         <ScrollView contentContainerStyle={styles.scroll}>
-          <ThemedText type="subtitle">Ernährung</ThemedText>
-          {/* Datum */}
-          <View style={styles.nav}>
-            <Pressable onPress={() => setDate(addDays(date, -1))} hitSlop={12}>
-              <ThemedText type="subtitle" style={{ fontSize: 24 }}>
-                ‹
-              </ThemedText>
+          {/* Kopf: Titel, Serie, Scanner */}
+          <View style={styles.head}>
+            <ThemedText style={styles.title}>ERNÄHRUNG</ThemedText>
+            <View style={styles.headRight}>
+              <ThemedText style={styles.streak}>🔥 {streak}</ThemedText>
+              <Pressable onPress={() => router.push({ pathname: '/hinzufuegen', params: { date, scan: '1' } })} hitSlop={10}>
+                <ThemedText style={{ fontSize: 26 }}>📷</ThemedText>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={[styles.weekCard, { backgroundColor: theme.backgroundElement }]}>
+            <WeekStrip selected={date} onSelect={setDate} logged={logged} hit={hit} expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
+          </View>
+
+          {/* Übersicht */}
+          <SectionLabel
+            title="Übersicht"
+            right={
+              target ? (
+                <View style={styles.badge}>
+                  <ThemedText type="smallBold" style={{ color: N.accent, fontSize: 13 }}>
+                    {target.deficit ? `DEFIZIT −${target.deficit} KCAL` : 'GEWICHT HALTEN'}
+                  </ThemedText>
+                </View>
+              ) : null
+            }
+          />
+          {target ? (
+            <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
+              <View style={styles.gaugeRow}>
+                <View style={styles.side}>
+                  <ThemedText style={styles.sideNum}>{eaten.kcal.toLocaleString('de-DE')}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Gegessen
+                  </ThemedText>
+                </View>
+                <Gauge eaten={eaten.kcal} target={target.kcal} />
+                <View style={styles.side}>
+                  <ThemedText style={styles.sideNum}>{target.kcal.toLocaleString('de-DE')}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Ziel
+                  </ThemedText>
+                </View>
+              </View>
+              <View style={styles.macros}>
+                <MacroLine label="Proteine" eaten={eaten.protein} target={target.proteinG} color={N.protein} />
+                <MacroLine label="Kohlenhydrate" eaten={eaten.carbs} target={target.carbsG} color={N.carbs} />
+                <MacroLine label="Fette" eaten={eaten.fat} target={target.fatG} color={N.fat} />
+              </View>
+              <Pressable onPress={explain} style={[styles.bigBtn, { backgroundColor: theme.text }]}>
+                <ThemedText style={{ color: theme.background, fontWeight: '700', fontSize: 17 }}>Wie entsteht mein Ziel?</ThemedText>
+              </Pressable>
+            </View>
+          ) : null}
+
+          {/* Mahlzeiten */}
+          <SectionLabel title="Mahlzeiten" />
+          <View style={[styles.card, { backgroundColor: theme.backgroundElement, paddingVertical: 4 }]}>
+            {MEALS.map((m, i) => {
+              const items = entries.filter((e) => e.meal === m.key);
+              const kcal = sum(items).kcal;
+              const goal = (target?.kcal ?? 2400) * MEAL_SHARE[m.key];
+              const canCopy = !items.length && yesterday.some((e) => e.meal === m.key);
+              return (
+                <Pressable
+                  key={m.key}
+                  onPress={() => router.push({ pathname: '/mahlzeit/[meal]', params: { meal: m.key, date } })}
+                  style={[styles.mealRow, i > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderColor: theme.backgroundSelected }]}>
+                  <Ring pct={kcal / goal} color={kcal > goal * 1.15 ? N.over : N.carbs}>
+                    <ThemedText style={{ fontSize: 22 }}>{m.icon}</ThemedText>
+                  </Ring>
+                  <View style={{ flex: 1, gap: 2 }}>
+                    <View style={styles.between}>
+                      <ThemedText style={styles.mealName} numberOfLines={1}>
+                        {m.label.replace(' (Intra/Post)', '')}
+                      </ThemedText>
+                      {kcal ? <ThemedText style={styles.mealKcal}>{kcal.toLocaleString('de-DE')} kcal</ThemedText> : null}
+                    </View>
+                    {items.length ? (
+                      <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+                        {items.map((e) => e.name.replace(/\s*\(.*\)$/, '')).join(', ')}
+                      </ThemedText>
+                    ) : null}
+                  </View>
+                  {canCopy ? <RoundButton label="↻" onPress={() => void copyMeal(m.key)} /> : null}
+                  <RoundButton label="+" onPress={() => router.push({ pathname: '/hinzufuegen', params: { meal: m.key, date } })} />
+                </Pressable>
+              );
+            })}
+          </View>
+          {yesterday.length && !entries.length ? (
+            <Pressable onPress={copyYesterday} style={[styles.pill, { backgroundColor: theme.backgroundElement }]}>
+              <ThemedText style={{ fontWeight: '700', fontSize: 17 }}>＋ Von gestern übernehmen</ThemedText>
             </Pressable>
-            <Pressable onPress={() => setDate(isoDate(new Date()))}>
-              <ThemedText type="smallBold">
-                {labelDate(fromIso(date))}
-                {date === isoDate(new Date()) ? ' · heute' : ''}
-              </ThemedText>
+          ) : null}
+
+          {/* Rezepte */}
+          <SectionLabel title="Rezepte" />
+          <View style={{ flexDirection: 'row', gap: Spacing.three }}>
+            <Pressable
+              onPress={() => router.push({ pathname: '/hinzufuegen', params: { date, tab: 'rezepte' } })}
+              style={[styles.recipe, { backgroundColor: theme.backgroundElement }]}>
+              <ThemedText style={{ fontSize: 34 }}>📒</ThemedText>
+              <ThemedText type="smallBold">Alle Rezepte ({saved.length})</ThemedText>
             </Pressable>
-            <Pressable onPress={() => setDate(addDays(date, 1))} hitSlop={12}>
-              <ThemedText type="subtitle" style={{ fontSize: 24 }}>
-                ›
-              </ThemedText>
+            <Pressable
+              onPress={() =>
+                Alert.alert(
+                  'Rezept anlegen',
+                  'Trag eine Mahlzeit einmal ein (z. B. dein Meal-Prep), öffne sie und tippe oben auf „⋯ › Als Rezept speichern“.',
+                )
+              }
+              style={[styles.recipe, { backgroundColor: theme.backgroundElement }]}>
+              <RoundButton label="+" onPress={() => Alert.alert('Rezept anlegen', 'Mahlzeit öffnen → „⋯“ → „Als Rezept speichern“.')} />
+              <ThemedText type="smallBold">Neues Rezept</ThemedText>
             </Pressable>
           </View>
 
-          {target ? (
-            <Card>
-              <MacroBars eaten={eaten} target={target.macros} />
-              <ThemedText type="small" themeColor="textSecondary">
-                Ziel = Erhalt + {target.activityKcal} Training{target.deficit ? ` − ${target.deficit} Defizit` : ''}
-              </ThemedText>
-            </Card>
-          ) : null}
-          {target ? <DayDetails eaten={eaten} kcal={target.kcal} /> : null}
+          {/* Gewicht */}
+          <SectionLabel title="Gewicht" />
+          <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
+            <View style={styles.weightRow}>
+              <RoundButton label="−" size={56} onPress={() => !garminToday && setDraftKg(Math.round(((shownKg ?? 82) - 0.1) * 10) / 10)} />
+              <ThemedText style={styles.weight}>{shownKg !== null ? `${shownKg.toLocaleString('de-DE', { minimumFractionDigits: 1 })} kg` : '– kg'}</ThemedText>
+              <RoundButton label="+" size={56} onPress={() => !garminToday && setDraftKg(Math.round(((shownKg ?? 82) + 0.1) * 10) / 10)} />
+            </View>
+            <ThemedText type="small" themeColor="textSecondary" style={{ textAlign: 'center' }}>
+              {garminToday
+                ? '⌚ Von Garmin – hat Vorrang und wird automatisch aktualisiert'
+                : weight
+                  ? `${weight.source === 'garmin' ? '⌚ Garmin' : 'Eigener Wert'} vom ${weight.date.slice(8, 10)}.${weight.date.slice(5, 7)}. · ± tippen, um heute einzutragen`
+                  : 'Noch kein Gewicht – Garmin-Waage oder ± tippen'}
+            </ThemedText>
+          </View>
 
-          {MEALS.map((m) => {
-            const items = entries.filter((e) => e.meal === m.key);
-            const s = sum(items);
-            return (
-              <Card key={m.key}>
-                <View style={styles.between}>
-                  <ThemedText type="smallBold" style={{ fontSize: 16 }}>
-                    {m.icon} {m.label}
+          {/* Nährstoffe */}
+          {goals ? (
+            <>
+              <SectionLabel title="Nährstoffe" onPress={() => router.navigate({ pathname: '/analysen', params: { seg: 'koerper' } })} />
+              <View style={styles.tiles}>
+                <NutrientTile icon="🍬" label="Zucker" value={eaten.sugar} goal={goals.sugar.max} kind="max" />
+                <NutrientTile icon="🌾" label="Ballaststoffe" value={eaten.fiber} goal={goals.fiber.min} kind="min" />
+              </View>
+              <View style={styles.tiles}>
+                <NutrientTile icon="🧂" label="Salz" value={eaten.salt} goal={goals.salt.max} kind="max" />
+                <NutrientTile icon="🧈" label="Ges. Fette" value={eaten.satFat} goal={goals.satFat.max} kind="max" />
+              </View>
+              {MICROS.some((m) => (eaten.micros[m.key] ?? 0) > 0) ? (
+                <>
+                  <ThemedText type="smallBold" style={{ fontSize: 20, marginTop: 4 }}>
+                    Mikros
                   </ThemedText>
-                  <ThemedText type="smallBold">{s.kcal ? `${s.kcal} kcal` : ''}</ThemedText>
-                </View>
-                {items.map((e) => (
-                  <Pressable key={e.id} onPress={() => editEntry(e)} onLongPress={() => removeEntry(e)} style={styles.entry}>
-                    <View style={{ flex: 1 }}>
-                      <ThemedText type="small" numberOfLines={1}>
-                        {e.name}
-                      </ThemedText>
-                      <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 12 }}>
-                        {e.grams ? `${e.grams} g · ` : ''}KH {e.carbs} · P {e.protein} · F {e.fat}
-                      </ThemedText>
+                  {Array.from({ length: Math.ceil(MICROS.length / 2) }, (_, i) => MICROS.slice(i * 2, i * 2 + 2)).map((pair) => (
+                    <View key={pair[0].key} style={styles.tiles}>
+                      {pair.map((m) => (
+                        <NutrientTile key={m.key} icon="" label={m.label} value={eaten.micros[m.key] ?? 0} goal={m.ref} kind="min" unit={m.unit} />
+                      ))}
+                      {pair.length === 1 ? <View style={{ flex: 1 }} /> : null}
                     </View>
-                    <ThemedText type="small">{e.kcal}</ThemedText>
-                  </Pressable>
-                ))}
-                <View style={styles.actions}>
-                  <Pressable onPress={() => openAdd(m.key)}>
-                    <ThemedText type="smallBold" style={{ color: '#3c87f7' }}>
-                      + Hinzufügen
-                    </ThemedText>
-                  </Pressable>
-                  {items.length ? (
-                    <Pressable onPress={() => saveAsMeal(m.key)}>
-                      <ThemedText type="small" themeColor="textSecondary">
-                        Als Mahlzeit speichern
-                      </ThemedText>
-                    </Pressable>
-                  ) : (
-                    <Pressable onPress={() => void copyYesterday(m.key)}>
-                      <ThemedText type="small" themeColor="textSecondary">
-                        Wie gestern
-                      </ThemedText>
-                    </Pressable>
-                  )}
-                </View>
-              </Card>
-            );
-          })}
-          <ThemedText type="small" themeColor="textSecondary">
-            Eintrag antippen = Menge ändern, lange drücken = löschen.
-          </ThemedText>
-          <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 11 }}>
+                  ))}
+                </>
+              ) : (
+                <ThemedText type="small" themeColor="textSecondary">
+                  Mikronährstoffe (Eisen, Magnesium, Zink, Vitamin D …) erscheinen, sobald die BLS-Mikrowerte eingespielt sind.
+                </ThemedText>
+              )}
+            </>
+          ) : null}
+
+          <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 11, marginTop: Spacing.three }}>
             Lebensmitteldaten: Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS) 4.0, DOI 10.25826/Data20251217-134202-0, CC BY 4.0 (Auszug
             via @thereforejs/foods, kcal nach LMIV berechnet) · Open Food Facts (ODbL) · eigene Einträge.
           </ThemedText>
         </ScrollView>
       </SafeAreaView>
-
-      {/* ---------- Hinzufügen ---------- */}
-      <Modal visible={sheet !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSheet(null)}>
-        <ThemedView style={{ flex: 1 }}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-            <View style={styles.sheetHead}>
-              <Pressable onPress={() => (sheet === 'search' ? setSheet(null) : setSheet('search'))}>
-                <ThemedText type="smallBold" style={{ color: '#3c87f7' }}>
-                  {sheet === 'search' ? 'Schließen' : '‹ Zurück'}
-                </ThemedText>
-              </Pressable>
-              <ThemedText type="smallBold">{MEALS.find((x) => x.key === meal)?.label}</ThemedText>
-              <View style={{ width: 60 }} />
-            </View>
-
-            {sheet === 'search' ? (
-              <View style={{ flex: 1, padding: Spacing.three, gap: Spacing.two }}>
-                <TextInput
-                  value={query}
-                  onChangeText={(v) => {
-                    setQuery(v);
-                    setOnline([]);
-                    if (v && tab === 'meals') setTab('all');
-                  }}
-                  placeholder="Suchen in 7.100 Lebensmitteln …"
-                  placeholderTextColor={theme.textSecondary}
-                  autoFocus
-                  returnKeyType="search"
-                  onSubmitEditing={() => void searchOnline()}
-                  style={[styles.search, { color: theme.text, backgroundColor: theme.backgroundElement }]}
-                />
-                <View style={styles.quickRow}>
-                  <Button title="📷 Barcode" variant="secondary" onPress={() => void startScan()} />
-                  <Button
-                    title="⚡ Schnell"
-                    variant="secondary"
-                    onPress={() => {
-                      setCustom(EMPTY_CUSTOM);
-                      setSheet('quick');
-                    }}
-                  />
-                  <Button
-                    title="＋ Eigenes"
-                    variant="secondary"
-                    onPress={() => {
-                      setPicked(null);
-                      setCustom({ ...EMPTY_CUSTOM, name: query });
-                      setSheet('custom');
-                    }}
-                  />
-                </View>
-                {q.length >= 2 ? (
-                  <ThemedText type="small" themeColor="textSecondary">
-                    {hits.length ? `${hits.length >= 60 ? '60+' : hits.length} Treffer · meine zuerst, dann BLS` : 'Kein Treffer – online suchen oder „＋ Eigenes“'}
-                  </ThemedText>
-                ) : (
-                <View style={styles.tabs}>
-                  {(
-                    [
-                      ['recent', 'Zuletzt'],
-                      ['all', 'Meine'],
-                      ['meals', `Mahlzeiten (${saved.length})`],
-                    ] as const
-                  ).map(([k, l]) => (
-                    <Pressable key={k} onPress={() => setTab(k)} style={[styles.tab, tab === k && { borderBottomColor: '#3c87f7' }]}>
-                      <ThemedText type="smallBold" style={{ color: tab === k ? '#3c87f7' : theme.textSecondary }}>
-                        {l}
-                      </ThemedText>
-                    </Pressable>
-                  ))}
-                </View>
-                )}
-
-                {tab === 'meals' && q.length < 2 ? (
-                  <FlatList
-                    data={saved}
-                    keyExtractor={(m) => String(m.id)}
-                    ListEmptyComponent={
-                      <ThemedText type="small" themeColor="textSecondary">
-                        Noch keine Mahlzeiten. Trage z. B. dein Meal-Prep einmal ein und tippe „Als Mahlzeit speichern“.
-                      </ThemedText>
-                    }
-                    renderItem={({ item }) => (
-                      <Pressable
-                        style={styles.result}
-                        onPress={() => logSavedMeal(item)}
-                        onLongPress={() =>
-                          Alert.alert('Mahlzeit löschen?', item.name, [
-                            { text: 'Abbrechen', style: 'cancel' },
-                            { text: 'Löschen', style: 'destructive', onPress: () => void deleteSavedMeal(db, item.id).then(reload) },
-                          ])
-                        }>
-                        <View style={{ flex: 1 }}>
-                          <ThemedText type="smallBold">{item.name}</ThemedText>
-                          <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-                            {item.items.map((i) => i.name).join(', ')}
-                          </ThemedText>
-                        </View>
-                        <ThemedText type="small">{sum(item.items).kcal} kcal</ThemedText>
-                      </Pressable>
-                    )}
-                  />
-                ) : (
-                  <FlatList
-                    data={[...list, ...online.map((o) => ({ ...o, useCount: -1 }))]}
-                    keyExtractor={(f, i) => `${f.id ?? 'off'}-${f.barcode ?? f.name}-${i}`}
-                    keyboardShouldPersistTaps="handled"
-                    ListFooterComponent={
-                      <View style={{ paddingVertical: Spacing.three, gap: Spacing.two }}>
-                        {busy ? <ActivityIndicator /> : null}
-                        {query.trim() ? (
-                          <Button title={`🔎 „${query.trim()}“ online suchen (Open Food Facts)`} variant="secondary" onPress={() => void searchOnline()} />
-                        ) : null}
-                      </View>
-                    }
-                    renderItem={({ item }) => (
-                      <Pressable style={styles.result} onPress={() => pick(item)}>
-                        <View style={{ flex: 1 }}>
-                          <ThemedText type="small" numberOfLines={1}>
-                            {item.name}
-                            {item.brand ? ` · ${item.brand}` : ''}
-                          </ThemedText>
-                          <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 12 }}>
-                            {SOURCE_BADGE[item.source]} je 100 g: KH {item.carbs} · P {item.protein} · F {item.fat}
-                            {item.fiber ? ` · Bst ${item.fiber}` : ''}
-                          </ThemedText>
-                        </View>
-                        <ThemedText type="small">{item.kcal} kcal</ThemedText>
-                      </Pressable>
-                    )}
-                  />
-                )}
-              </View>
-            ) : null}
-
-            {sheet === 'amount' && picked ? (
-              <ScrollView contentContainerStyle={{ padding: Spacing.three, gap: Spacing.three }} keyboardShouldPersistTaps="handled">
-                <ThemedText type="smallBold" style={{ fontSize: 18 }}>
-                  {picked.name}
-                  {picked.brand ? ` · ${picked.brand}` : ''}
-                </ThemedText>
-                <NumberField label="Menge" unit="g" value={grams} onChange={setGrams} />
-                <View style={styles.quickRow}>
-                  {[...(picked.servingG ? [picked.servingG] : []), 50, 100, 150, 200]
-                    .filter((v, i, a) => a.indexOf(v) === i)
-                    .map((v) => (
-                      <Pressable key={v} onPress={() => setGrams(String(v))} style={styles.pill}>
-                        <ThemedText type="smallBold">
-                          {v === picked.servingG && picked.servingLabel ? picked.servingLabel : `${v} g`}
-                        </ThemedText>
-                      </Pressable>
-                    ))}
-                </View>
-                {preview ? <NutrientTable n={preview} food={picked} /> : null}
-                <Button title="Hinzufügen" onPress={() => void add()} />
-                {picked.id ? (
-                  <Button title="Diese Menge als Portion merken" variant="secondary" onPress={() => rememberServing(picked)} />
-                ) : null}
-              </ScrollView>
-            ) : null}
-
-            {sheet === 'scan' ? (
-              <View style={{ flex: 1 }}>
-                <CameraView
-                  style={{ flex: 1 }}
-                  facing="back"
-                  barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e'] }}
-                  onBarcodeScanned={({ data }) => void onScan(data)}
-                />
-                <View style={styles.scanHint}>
-                  {busy ? <ActivityIndicator color="#fff" /> : null}
-                  <ThemedText style={{ color: '#fff', textAlign: 'center' }}>Barcode der Packung ins Bild halten</ThemedText>
-                </View>
-              </View>
-            ) : null}
-
-            {sheet === 'custom' || sheet === 'quick' ? (
-              <ScrollView contentContainerStyle={{ padding: Spacing.three, gap: Spacing.two }} keyboardShouldPersistTaps="handled">
-                <ThemedText type="smallBold" style={{ fontSize: 18 }}>
-                  {sheet === 'quick' ? 'Schnell-Eintrag (Gesamtwerte)' : 'Eigenes Lebensmittel (je 100 g)'}
-                </ThemedText>
-                {picked?.barcode ? (
-                  <ThemedText type="small" themeColor="textSecondary">
-                    Barcode {picked.barcode} – wird beim nächsten Scan sofort erkannt.
-                  </ThemedText>
-                ) : null}
-                <NumberField label="Name" keyboard="default" value={custom.name} onChange={(v) => setCustom((c) => ({ ...c, name: v }))} />
-                <View style={styles.grid}>
-                  <NumberField label="kcal" value={custom.kcal} onChange={(v) => setCustom((c) => ({ ...c, kcal: v }))} />
-                  <NumberField label="KH" unit="g" value={custom.carbs} onChange={(v) => setCustom((c) => ({ ...c, carbs: v }))} />
-                  <NumberField label="Protein" unit="g" value={custom.protein} onChange={(v) => setCustom((c) => ({ ...c, protein: v }))} />
-                  <NumberField label="Fett" unit="g" value={custom.fat} onChange={(v) => setCustom((c) => ({ ...c, fat: v }))} />
-                  <NumberField label="davon Zucker" unit="g" value={custom.sugar} onChange={(v) => setCustom((c) => ({ ...c, sugar: v }))} />
-                  <NumberField label="Ballaststoffe" unit="g" value={custom.fiber} onChange={(v) => setCustom((c) => ({ ...c, fiber: v }))} />
-                  <NumberField label="Salz" unit="g" value={custom.salt} onChange={(v) => setCustom((c) => ({ ...c, salt: v }))} />
-                  {sheet === 'custom' ? (
-                    <>
-                      <NumberField label="ges. Fett" unit="g" value={custom.satFat} onChange={(v) => setCustom((c) => ({ ...c, satFat: v }))} />
-                      <NumberField label="Portion" unit="g" value={custom.serving} onChange={(v) => setCustom((c) => ({ ...c, serving: v }))} />
-                    </>
-                  ) : null}
-                </View>
-                <ThemedText type="small" themeColor="textSecondary">
-                  kcal leer lassen → wird aus den Makros berechnet. Werte stehen auf der Packung (Nährwerttabelle).
-                </ThemedText>
-                <Button title={sheet === 'quick' ? 'Eintragen' : 'Speichern & Menge wählen'} onPress={() => void (sheet === 'quick' ? saveQuick() : saveCustom())} />
-              </ScrollView>
-            ) : null}
-          </KeyboardAvoidingView>
-        </ThemedView>
-      </Modal>
     </ThemedView>
   );
-}
-
-const EMPTY_CUSTOM = { name: '', kcal: '', protein: '', carbs: '', fat: '', sugar: '', fiber: '', salt: '', satFat: '', serving: '' };
-
-const SOURCE_BADGE: Record<Food['source'], string> = { bls: 'BLS ·', off: '🌐', own: '★', basis: '★' };
-
-const fmt = (n: number, d = 1) => (Math.round(n * 10 ** d) / 10 ** d).toLocaleString('de-DE');
-
-/** Nährwerttabelle für die gewählte Menge (wie auf der Packung + Mikros). */
-function NutrientTable({ n, food }: { n: Nutrients; food: Food }) {
-  const known = (v: number | null | undefined) => v !== null && v !== undefined;
-  const rows: [string, string, boolean?][] = [
-    ['Kohlenhydrate', `${fmt(n.carbs)} g`],
-    ['  davon Zucker', known(food.sugar) ? `${fmt(n.sugar)} g` : '–', true],
-    ['Ballaststoffe', known(food.fiber) ? `${fmt(n.fiber)} g` : '–'],
-    ['Protein', `${fmt(n.protein)} g`],
-    ['Fett', `${fmt(n.fat)} g`],
-    ['  davon gesättigt', known(food.satFat) ? `${fmt(n.satFat)} g` : '–', true],
-    ['Salz', known(food.salt) ? `${fmt(n.salt, 2)} g` : '–'],
-  ];
-  const micros = MICROS.filter((m) => typeof n.micros[m.key] === 'number');
-  return (
-    <Card>
-      <ThemedText style={{ fontSize: 26, fontWeight: '700' }}>{n.kcal} kcal</ThemedText>
-      {rows.map(([l, v, sub]) => (
-        <View key={l} style={styles.between}>
-          <ThemedText type="small" themeColor={sub ? 'textSecondary' : undefined}>
-            {l}
-          </ThemedText>
-          <ThemedText type={sub ? 'small' : 'smallBold'}>{v}</ThemedText>
-        </View>
-      ))}
-      {micros.length ? (
-        <ThemedText type="small" themeColor="textSecondary">
-          {micros.map((m) => `${m.label} ${fmt(n.micros[m.key]!, 1)} ${m.unit} (${Math.round((n.micros[m.key]! / m.ref) * 100)} %)`).join(' · ')}
-        </ThemedText>
-      ) : null}
-    </Card>
-  );
-}
-
-/** Tagesdetails: Ballaststoffe, Zucker, gesättigte Fette, Salz und Mikros gegen Ziel/Grenze. */
-function DayDetails({ eaten, kcal }: { eaten: Nutrients; kcal: number }) {
-  const t = extraTargets(kcal);
-  const bar = (label: string, v: number, goal: number, kind: 'min' | 'max', unit = 'g') => {
-    const pct = Math.min(1, goal > 0 ? v / goal : 0);
-    const ok = kind === 'min' ? v >= goal : v <= goal;
-    const color = kind === 'min' ? (ok ? '#2DB55D' : '#3c87f7') : ok ? '#8E9AB5' : '#E5484D';
-    return (
-      <View key={label} style={{ gap: 3 }}>
-        <View style={styles.between}>
-          <ThemedText type="small">{label}</ThemedText>
-          <ThemedText type="small">
-            <ThemedText type="smallBold">{fmt(v, unit === 'g' && v < 10 ? 1 : 0)}</ThemedText> / {kind === 'min' ? '≥' : '≤'} {goal} {unit}
-          </ThemedText>
-        </View>
-        <View style={styles.track}>
-          <View style={[styles.fill, { width: `${pct * 100}%`, backgroundColor: color }]} />
-        </View>
-      </View>
-    );
-  };
-  const micros = MICROS.filter((m) => (eaten.micros[m.key] ?? 0) > 0);
-  return (
-    <Card title="Details">
-      {bar('Ballaststoffe', eaten.fiber, t.fiber.min, 'min')}
-      {bar('Zucker', eaten.sugar, t.sugar.max, 'max')}
-      {bar('Gesättigte Fette', eaten.satFat, t.satFat.max, 'max')}
-      {bar('Salz', eaten.salt, t.salt.max, 'max')}
-      {micros.length ? (
-        <>
-          <ThemedText type="smallBold" style={{ marginTop: 6 }}>
-            Mikronährstoffe (aus dem Essen, ohne Supplements)
-          </ThemedText>
-          {micros.map((m) => bar(m.label, eaten.micros[m.key] ?? 0, m.ref, 'min', m.unit))}
-        </>
-      ) : (
-        <ThemedText type="small" themeColor="textSecondary">
-          Mikronährstoffe (Eisen, Magnesium, Zink, Vitamin D …) erscheinen hier, sobald die BLS-Mikrowerte eingespielt sind.
-        </ThemedText>
-      )}
-    </Card>
-  );
-}
-
-function defaultMeal(): Meal {
-  const h = new Date().getHours();
-  if (h < 10) return 'fruehstueck';
-  if (h < 15) return 'mittag';
-  if (h < 21) return 'abend';
-  return 'snack';
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safe: { flex: 1, width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center' },
   scroll: { padding: Spacing.three, gap: Spacing.three, paddingBottom: BottomTabInset + Spacing.five },
-  track: { height: 6, borderRadius: 3, backgroundColor: '#8883', overflow: 'hidden' },
-  fill: { height: 6, borderRadius: 3 },
-  nav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 },
-  between: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  entry: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
-  actions: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 4 },
-  sheetHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: Spacing.three, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: '#8885' },
-  search: { borderRadius: 12, paddingHorizontal: Spacing.three, paddingVertical: 12, fontSize: 17 },
-  quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
-  tabs: { flexDirection: 'row', gap: Spacing.four },
-  tab: { paddingVertical: 6, borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  result: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: '#8884' },
-  pill: { backgroundColor: '#8883', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 16 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
-  scanHint: { position: 'absolute', bottom: 60, left: 0, right: 0, gap: 8, alignItems: 'center' },
+  head: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  headRight: { flexDirection: 'row', alignItems: 'center', gap: 18 },
+  title: { fontSize: 30, lineHeight: 36, fontWeight: '900', letterSpacing: 0.5 },
+  streak: { fontSize: 24, fontWeight: '800' },
+  weekCard: { borderRadius: 24, padding: Spacing.three },
+  badge: { borderWidth: 1.5, borderColor: N.accent, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2 },
+  card: { borderRadius: 24, padding: Spacing.three, gap: Spacing.three },
+  gaugeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  side: { alignItems: 'center', flex: 1 },
+  sideNum: { fontSize: 24, lineHeight: 30, fontWeight: '700' },
+  macros: { flexDirection: 'row', gap: Spacing.three },
+  bigBtn: { borderRadius: 28, paddingVertical: 16, alignItems: 'center' },
+  mealRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14 },
+  mealName: { fontSize: 22, lineHeight: 28, fontWeight: '700', flexShrink: 1 },
+  mealKcal: { fontSize: 17, fontWeight: '700' },
+  between: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  pill: { alignSelf: 'center', borderRadius: 24, paddingHorizontal: 20, paddingVertical: 12 },
+  recipe: { flex: 1, borderRadius: 24, padding: Spacing.three, alignItems: 'center', justifyContent: 'center', gap: 10, minHeight: 130 },
+  weightRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.three },
+  weight: { fontSize: 40, lineHeight: 48, fontWeight: '800' },
+  tiles: { flexDirection: 'row', gap: Spacing.three },
 });

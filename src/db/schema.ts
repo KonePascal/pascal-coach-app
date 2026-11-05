@@ -242,6 +242,10 @@ const MIGRATIONS: ((db: SQLiteDatabase) => Promise<void>)[] = [
     const rows = await db.getAllAsync<{ id: number; name: string; brand: string | null }>('SELECT id, name, brand FROM foods');
     for (const r of rows) await db.runAsync('UPDATE foods SET search = ? WHERE id = ?', searchKey(`${r.name} ${r.brand ?? ''}`), r.id);
   },
+  // v10 – Favoriten für die Ernährungsseite
+  async (db) => {
+    await db.execAsync('ALTER TABLE foods ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;');
+  },
 ];
 
 /**

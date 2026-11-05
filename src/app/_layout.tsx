@@ -19,6 +19,9 @@ export default function RootLayout() {
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="kennzahl/[key]" options={{ title: '', headerBackTitle: 'Start' }} />
+          <Stack.Screen name="mahlzeit/[meal]" options={{ title: '', headerBackTitle: 'Ernährung', headerShadowVisible: false }} />
+          <Stack.Screen name="hinzufuegen" options={{ title: '', headerBackTitle: 'Zurück', headerShadowVisible: false }} />
+          <Stack.Screen name="lebensmittel" options={{ title: '', presentation: 'modal', headerShadowVisible: false }} />
         </Stack>
       </ThemeProvider>
     </SQLiteProvider>

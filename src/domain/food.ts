@@ -339,3 +339,27 @@ export function rescaleEntry<T extends Macros & Partial<Extras> & { grams: numbe
     micros,
   };
 }
+
+/** Tage in Folge mit Einträgen bis heute (heute leer zählt noch nicht als Abbruch). */
+export function logStreak(dates: string[], today: string, addDays: (d: string, n: number) => string): number {
+  const set = new Set(dates);
+  let d = set.has(today) ? today : addDays(today, -1);
+  let n = 0;
+  while (set.has(d)) {
+    n += 1;
+    d = addDays(d, -1);
+  }
+  return n;
+}
+
+/** Tag im Zielkorridor (±10 % kcal)? */
+export const onTarget = (kcal: number, target: number) => target > 0 && Math.abs(kcal - target) <= target * 0.1;
+
+/** Anteil der kcal je Makro (für die Prozentangaben im Lebensmittel-Detail). */
+export function macroShares(m: Macros): { protein: number; carbs: number; fat: number } {
+  const p = m.protein * 4;
+  const c = m.carbs * 4;
+  const f = m.fat * 9;
+  const t = p + c + f || 1;
+  return { protein: Math.round((p / t) * 100), carbs: Math.round((c / t) * 100), fat: Math.round((f / t) * 100) };
+}

@@ -5,6 +5,8 @@ import { StyleSheet, View } from 'react-native';
 import Svg, { Rect } from 'react-native-svg';
 
 import { LineChart } from '@/components/line-chart';
+import { N } from '@/components/nutrition/kit';
+import { WeekBarCard } from '@/components/nutrition/week-bars';
 import { ThemedText } from '@/components/themed-text';
 import { Card, LIGHT_COLOR } from '@/components/ui';
 import { zoneColor } from '@/components/workout-card';
@@ -25,6 +27,7 @@ import {
 import { fromIso, isoDate } from '@/domain/dates';
 import { addDays, daysBetween } from '@/domain/pmc';
 import { DEFAULT_SETTINGS, type Settings } from '@/domain/types';
+import { computeDayTarget, type DayTarget } from '@/hooks/use-day-target';
 import { powerZones } from '@/domain/zones';
 
 interface Data {
@@ -34,6 +37,8 @@ interface Data {
   zones: ZoneWeek[];
   ef: ReturnType<typeof efTrend>;
   weight: ReturnType<typeof weightTrend>;
+  week: { days: string[]; kcal: number[]; protein: number[]; carbs: number[]; fat: number[] };
+  target: DayTarget | null;
   food: { days: number; kcal: number; carbs: number; protein: number; fat: number; fiber: number; sugar: number; salt: number } | null;
 }
 
@@ -81,14 +86,21 @@ export function useInsights() {
   const load = useCallback(async () => {
     const today = isoDate(new Date());
     const s = await loadSettings(db).catch(() => DEFAULT_SETTINGS);
-    const [acts, weights, totals] = await Promise.all([
+    const [acts, weights, totals, last7, target] = await Promise.all([
       loadActivities(db, addDays(today, -365), today),
       loadWeights(db, addDays(today, -120)),
       dailyTotals(db, addDays(today, -7), addDays(today, -1)),
+      dailyTotals(db, addDays(today, -6), today),
+      computeDayTarget(db, today).catch(() => null),
     ]);
+    const days = Array.from({ length: 7 }, (_, i) => addDays(today, i - 6));
+    const byDay = new Map(last7.map((t) => [t.date, t]));
+    const col = (k: 'kcal' | 'protein' | 'carbs' | 'fat') => days.map((d) => Math.round(byDay.get(d)?.[k] ?? 0));
     const n = totals.length;
     setD({
       s,
+      week: { days, kcal: col('kcal'), protein: col('protein'), carbs: col('carbs'), fat: col('fat') },
+      target,
       recent: powerCurve(acts, addDays(today, -42)),
       all: powerCurve(acts),
       zones: zonesByWeek(acts, today, 6),
@@ -280,6 +292,16 @@ export function BodySection({ d }: { d: Data }) {
             </ThemedText>
           )}
         </Card>
+
+        {/* Ernährung · 7 Tage */}
+        {d.target ? (
+          <>
+            <WeekBarCard title="Kalorien" days={d.week.days} values={d.week.kcal} target={d.target.kcal} unit="kcal" color="#2E7A8A" />
+            <WeekBarCard title="Proteine" days={d.week.days} values={d.week.protein} target={d.target.proteinG} unit=" g" color={N.protein} />
+            <WeekBarCard title="Kohlenhydrate" days={d.week.days} values={d.week.carbs} target={d.target.carbsG} unit=" g" color={N.carbs} />
+            <WeekBarCard title="Fette" days={d.week.days} values={d.week.fat} target={d.target.fatG} unit=" g" color={N.fat} />
+          </>
+        ) : null}
 
         {/* Ernährung */}
         <Card title="Ernährung · Ø letzte 7 Tage">

@@ -1,4 +1,4 @@
-import { useSQLiteContext } from 'expo-sqlite';
+import { useSQLiteContext, type SQLiteDatabase } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
 
 import { getCheckin, getHistory, loadPlan, loadSettings, loadTpEvents } from '@/db/repo';
@@ -10,13 +10,10 @@ import { evaluate } from '@/domain/readiness';
 import { tpToPlanned } from '@/domain/trainingpeaks';
 import type { Baselines, CheckIn } from '@/domain/types';
 
-/** Tagesziel (kcal/Makros) für ein Datum – gleiche Logik wie auf „Heute“. */
-export function useDayTarget() {
-  const db = useSQLiteContext();
-  const [target, setTarget] = useState<(NutritionTarget & { macros: Macros }) | null>(null);
+export type DayTarget = NutritionTarget & { macros: Macros };
 
-  const load = useCallback(
-    async (date: string) => {
+/** Tagesziel (kcal/Makros) für ein Datum – Ampel + Einheit des Tages + Garmin-kcal. */
+export async function computeDayTarget(db: SQLiteDatabase, date: string): Promise<DayTarget> {
       const [s, c, h, plan, tp] = await Promise.all([
         loadSettings(db),
         getCheckin(db, date),
@@ -29,7 +26,17 @@ export function useDayTarget() {
       const r = evaluate(checkin, h, baselines);
       const session = sessionFor(fromIso(date), r, s.ftp, plan, tpToPlanned(tp));
       const t = nutritionFor(session, r, s, c?.activityKcal ?? c?.garminKcal);
-      const full = { ...t, macros: { kcal: t.kcal, protein: t.proteinG, carbs: t.carbsG, fat: t.fatG } };
+      return { ...t, macros: { kcal: t.kcal, protein: t.proteinG, carbs: t.carbsG, fat: t.fatG } };
+}
+
+/** Tagesziel als Hook (lädt bei Bedarf neu). */
+export function useDayTarget() {
+  const db = useSQLiteContext();
+  const [target, setTarget] = useState<DayTarget | null>(null);
+
+  const load = useCallback(
+    async (date: string) => {
+      const full = await computeDayTarget(db, date);
       setTarget(full);
       return full;
     },
