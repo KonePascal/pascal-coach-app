@@ -1,5 +1,6 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
+import { BASIS_FOODS } from '@/domain/food';
 import { WEEK_TEMPLATE } from '@/domain/plan';
 import { DEFAULT_SUPPLEMENTS } from '@/domain/supplements';
 
@@ -147,6 +148,59 @@ const MIGRATIONS: ((db: SQLiteDatabase) => Promise<void>)[] = [
         s.time,
         s.rule,
         s.active ? 1 : 0,
+      );
+    }
+  },
+  // v7 – Ernährungstagebuch: Lebensmittel, Einträge, gespeicherte Mahlzeiten
+  async (db) => {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS foods (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        name          TEXT NOT NULL,
+        brand         TEXT,
+        barcode       TEXT UNIQUE,
+        kcal          REAL NOT NULL,   -- je 100 g
+        protein       REAL NOT NULL,
+        carbs         REAL NOT NULL,
+        fat           REAL NOT NULL,
+        serving_g     REAL,
+        serving_label TEXT,
+        source        TEXT NOT NULL DEFAULT 'own',
+        use_count     INTEGER NOT NULL DEFAULT 0,
+        last_used     TEXT
+      );
+      CREATE TABLE IF NOT EXISTS food_log (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        date       TEXT NOT NULL,
+        meal       TEXT NOT NULL,
+        food_id    INTEGER,
+        name       TEXT NOT NULL,
+        grams      REAL NOT NULL,
+        kcal       REAL NOT NULL,
+        protein    REAL NOT NULL,
+        carbs      REAL NOT NULL,
+        fat        REAL NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS food_log_date ON food_log(date);
+      CREATE TABLE IF NOT EXISTS saved_meals (
+        id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        name  TEXT NOT NULL,
+        items TEXT NOT NULL   -- JSON: [{foodId, name, grams, kcal, protein, carbs, fat}]
+      );
+    `);
+    for (const f of BASIS_FOODS) {
+      await db.runAsync(
+        'INSERT INTO foods (name, brand, kcal, protein, carbs, fat, serving_g, serving_label, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        f.name,
+        f.brand ?? null,
+        f.kcal,
+        f.protein,
+        f.carbs,
+        f.fat,
+        f.servingG ?? null,
+        f.servingLabel ?? null,
+        f.source,
       );
     }
   },

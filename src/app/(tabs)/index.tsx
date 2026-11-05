@@ -12,6 +12,7 @@ import { Card, LIGHT_COLOR, LIGHT_EMOJI } from '@/components/ui';
 import { WorkoutProfile } from '@/components/workout-card';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import {
+  dayLog,
   getCheckin,
   getHistory,
   listLibrary,
@@ -35,6 +36,8 @@ import type { Baselines, Light } from '@/domain/types';
 import { COMPLIANCE_COLOR, COMPLIANCE_LABEL, buildRate, buildWeek, type WeekSummary } from '@/domain/week';
 import { totalSeconds, workoutTss } from '@/domain/workout';
 import { usePmc } from '@/hooks/use-pmc';
+import { useDayTarget } from '@/hooks/use-day-target';
+import { sum, type Macros } from '@/domain/food';
 import { useTheme } from '@/hooks/use-theme';
 import { syncLoad } from '@/lib/sync';
 
@@ -48,6 +51,7 @@ interface StartData {
   workout: ResolvedWorkout | null;
   week: WeekSummary;
   supps: { due: number; taken: number };
+  eaten: Macros;
   baselines: Baselines;
 }
 
@@ -124,13 +128,15 @@ export default function StartScreen() {
   const [data, setData] = useState<StartData | null>(null);
   const [mode, setMode] = useState<'min' | 'tss'>('min');
   const [refreshing, setRefreshing] = useState(false);
+  const { target, load: loadTarget } = useDayTarget();
   const today = isoDate(new Date());
 
   const load = useCallback(async () => {
     const m = await reload();
     const s = m.settings;
     const monday = weekStart(today);
-    const [checkin, history, tp, acts, plan, library, wHistory, supps, taken] = await Promise.all([
+    void loadTarget(today);
+    const [checkin, history, tp, acts, plan, library, wHistory, supps, taken, foodLog] = await Promise.all([
       getCheckin(db, today),
       getHistory(db, today),
       loadTpEvents(db, monday, addDays(monday, 6)),
@@ -140,6 +146,7 @@ export default function StartScreen() {
       workoutHistory(db),
       listSupplements(db),
       takenOn(db, today),
+      dayLog(db, today),
     ]);
     const tpToday = tp.filter((e) => e.date === today);
     const planned = tpToPlanned(tpToday) ?? plannedFor(new Date(), plan);
@@ -153,9 +160,10 @@ export default function StartScreen() {
       workout,
       week: buildWeek({ monday, today, tp, activities: acts, ftp: s.ftp, gymTss: s.gymTss }),
       supps: { due: due.length, taken: due.filter((x) => taken.has(x.id)).length },
+      eaten: sum(foodLog),
       baselines,
     });
-  }, [db, reload, today]);
+  }, [db, reload, today, loadTarget]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -399,6 +407,24 @@ export default function StartScreen() {
                     </View>
                   ))}
                 </View>
+              </Card>
+            </Pressable>
+          ) : null}
+
+          {/* Ernährung kurz */}
+          {data && target ? (
+            <Pressable onPress={() => router.push('/essen')}>
+              <Card>
+                <View style={styles.between}>
+                  <ThemedText type="smallBold">🍽️ Ernährung</ThemedText>
+                  <ThemedText type="smallBold" style={{ color: target.kcal - data.eaten.kcal < 0 ? LIGHT_COLOR.red : '#3c87f7' }}>
+                    {Math.abs(target.kcal - data.eaten.kcal)} kcal {target.kcal - data.eaten.kcal < 0 ? 'drüber' : 'übrig'}
+                  </ThemedText>
+                </View>
+                <ThemedText type="small" themeColor="textSecondary">
+                  KH {Math.round(data.eaten.carbs)}/{target.carbsG} g · Protein {Math.round(data.eaten.protein)}/{target.proteinG} g · Fett{' '}
+                  {Math.round(data.eaten.fat)}/{target.fatG} g · tippen zum Eintragen ›
+                </ThemedText>
               </Card>
             </Pressable>
           ) : null}

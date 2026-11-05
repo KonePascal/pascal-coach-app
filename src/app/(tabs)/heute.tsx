@@ -1,4 +1,4 @@
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
@@ -25,6 +25,7 @@ import {
   listSupplements,
   loadPlan,
   loadSettings,
+  dayLog,
   listLibrary,
   loadTpEvents,
   logWorkout,
@@ -45,6 +46,8 @@ import { DAY_TYPE_LABEL, WEEK_TEMPLATE, plannedFor as plannedDay, sessionFor, up
 import { resolveWorkout, type LibraryItem, type LoggedWorkout } from '@/domain/resolve';
 import { parseWorkoutText, reduceWorkout, toZwo } from '@/domain/workout';
 import { WorkoutCard } from '@/components/workout-card';
+import { MacroBars } from '@/components/macro-bars';
+import { sum, type LogEntry } from '@/domain/food';
 import { evaluate, fmtHours } from '@/domain/readiness';
 import { isDue, type Supplement } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type Baselines, type CheckIn, type Settings } from '@/domain/types';
@@ -123,6 +126,7 @@ export default function TodayScreen() {
   const [tp, setTp] = useState<TpEvent[]>([]);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [wHistory, setWHistory] = useState<LoggedWorkout[]>([]);
+  const [foodLog, setFoodLog] = useState<LogEntry[]>([]);
   const pmc = usePmc();
 
   const load = useCallback(async (opts?: { keepForm?: boolean }) => {
@@ -138,6 +142,7 @@ export default function TodayScreen() {
     setTp(ev);
     setLibrary(await listLibrary(db));
     setWHistory(await workoutHistory(db));
+    setFoodLog(await dayLog(db, date));
     void pmc.reload();
     setSettings(s);
     setPlan(p);
@@ -473,15 +478,8 @@ export default function TodayScreen() {
             ) : null}
 
             <Card title="Essen heute">
-              <View style={styles.kcalRow}>
-                <ThemedText type="subtitle">{food.kcal.toLocaleString('de-DE')}</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  kcal
-                </ThemedText>
-              </View>
-              <Row label="Kohlenhydrate" value={`${food.carbsG} g`} strong />
-              <Row label="Protein" value={`${food.proteinG} g`} />
-              <Row label="Fett" value={`${food.fatG} g`} />
+              <MacroBars eaten={sum(foodLog)} target={{ kcal: food.kcal, protein: food.proteinG, carbs: food.carbsG, fat: food.fatG }} />
+              <Button title="🍽️ Essen eintragen" onPress={() => router.push({ pathname: '/essen', params: { date } })} />
               <Row
                 label="Rechnung"
                 value={`${settings.maintenanceKcal} + ${food.activityKcal} Aktivität${food.deficit ? ` − ${food.deficit}` : ''}`}

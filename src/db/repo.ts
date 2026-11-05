@@ -1,5 +1,6 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
+import type { Food, LogEntry, Meal } from '@/domain/food';
 import type { GarminActivity } from '@/domain/garmin-parse';
 import type { LoadOverride, StoredActivity } from '@/domain/load';
 import type { LibraryItem, LoggedWorkout } from '@/domain/resolve';
@@ -352,11 +353,144 @@ export async function workoutHistory(db: SQLiteDatabase, limit = 60): Promise<Lo
   return rows.map((r) => ({ date: r.date, dayType: r.day_type, name: r.name, xml: r.xml }));
 }
 
+// ---------- Ernährung ----------
+
+export type StoredFood = Food & { id: number; useCount: number };
+
+interface FoodRow {
+  id: number;
+  name: string;
+  brand: string | null;
+  barcode: string | null;
+  kcal: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  serving_g: number | null;
+  serving_label: string | null;
+  source: Food['source'];
+  use_count: number;
+}
+
+const toFood = (r: FoodRow): StoredFood => ({
+  id: r.id,
+  name: r.name,
+  brand: r.brand,
+  barcode: r.barcode,
+  kcal: r.kcal,
+  protein: r.protein,
+  carbs: r.carbs,
+  fat: r.fat,
+  servingG: r.serving_g,
+  servingLabel: r.serving_label,
+  source: r.source,
+  useCount: r.use_count,
+});
+
+export async function listFoods(db: SQLiteDatabase): Promise<StoredFood[]> {
+  const rows = await db.getAllAsync<FoodRow>('SELECT * FROM foods ORDER BY use_count DESC, name');
+  return rows.map(toFood);
+}
+
+export async function recentFoods(db: SQLiteDatabase, limit = 15): Promise<StoredFood[]> {
+  const rows = await db.getAllAsync<FoodRow>('SELECT * FROM foods WHERE last_used IS NOT NULL ORDER BY last_used DESC LIMIT ?', limit);
+  return rows.map(toFood);
+}
+
+export async function foodByBarcode(db: SQLiteDatabase, barcode: string): Promise<StoredFood | null> {
+  const r = await db.getFirstAsync<FoodRow>('SELECT * FROM foods WHERE barcode = ?', barcode);
+  return r ? toFood(r) : null;
+}
+
+/** Speichert ein Lebensmittel (gleicher Barcode → aktualisieren) und gibt die ID zurück. */
+export async function saveFood(db: SQLiteDatabase, f: Food): Promise<number> {
+  if (f.barcode) {
+    const existing = await foodByBarcode(db, f.barcode);
+    if (existing) {
+      await db.runAsync(
+        'UPDATE foods SET name = ?, brand = ?, kcal = ?, protein = ?, carbs = ?, fat = ?, serving_g = ?, serving_label = ? WHERE id = ?',
+        f.name, f.brand ?? null, f.kcal, f.protein, f.carbs, f.fat, f.servingG ?? null, f.servingLabel ?? null, existing.id,
+      );
+      return existing.id;
+    }
+  }
+  if (f.id) {
+    await db.runAsync(
+      'UPDATE foods SET name = ?, brand = ?, kcal = ?, protein = ?, carbs = ?, fat = ?, serving_g = ?, serving_label = ? WHERE id = ?',
+      f.name, f.brand ?? null, f.kcal, f.protein, f.carbs, f.fat, f.servingG ?? null, f.servingLabel ?? null, f.id,
+    );
+    return f.id;
+  }
+  const r = await db.runAsync(
+    'INSERT INTO foods (name, brand, barcode, kcal, protein, carbs, fat, serving_g, serving_label, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    f.name, f.brand ?? null, f.barcode ?? null, f.kcal, f.protein, f.carbs, f.fat, f.servingG ?? null, f.servingLabel ?? null, f.source,
+  );
+  return Number(r.lastInsertRowId);
+}
+
+export async function deleteFood(db: SQLiteDatabase, id: number): Promise<void> {
+  await db.runAsync('DELETE FROM foods WHERE id = ?', id);
+}
+
+export async function logFood(db: SQLiteDatabase, e: LogEntry): Promise<void> {
+  await db.runAsync(
+    'INSERT INTO food_log (date, meal, food_id, name, grams, kcal, protein, carbs, fat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    e.date, e.meal, e.foodId, e.name, e.grams, e.kcal, e.protein, e.carbs, e.fat,
+  );
+  if (e.foodId) {
+    await db.runAsync("UPDATE foods SET use_count = use_count + 1, last_used = datetime('now') WHERE id = ?", e.foodId);
+  }
+}
+
+export async function deleteLogEntry(db: SQLiteDatabase, id: number): Promise<void> {
+  await db.runAsync('DELETE FROM food_log WHERE id = ?', id);
+}
+
+export async function dayLog(db: SQLiteDatabase, date: string): Promise<LogEntry[]> {
+  const rows = await db.getAllAsync<{
+    id: number; date: string; meal: Meal; food_id: number | null; name: string; grams: number;
+    kcal: number; protein: number; carbs: number; fat: number;
+  }>('SELECT * FROM food_log WHERE date = ? ORDER BY id', date);
+  return rows.map((r) => ({
+    id: r.id, date: r.date, meal: r.meal, foodId: r.food_id, name: r.name, grams: r.grams,
+    kcal: r.kcal, protein: r.protein, carbs: r.carbs, fat: r.fat,
+  }));
+}
+
+export interface SavedMeal {
+  id: number;
+  name: string;
+  items: Omit<LogEntry, 'id' | 'date' | 'meal'>[];
+}
+
+export async function listSavedMeals(db: SQLiteDatabase): Promise<SavedMeal[]> {
+  const rows = await db.getAllAsync<{ id: number; name: string; items: string }>('SELECT * FROM saved_meals ORDER BY name');
+  return rows.map((r) => ({ id: r.id, name: r.name, items: JSON.parse(r.items) as SavedMeal['items'] }));
+}
+
+export async function saveMeal(db: SQLiteDatabase, name: string, entries: LogEntry[]): Promise<void> {
+  const items = entries.map(({ foodId, name: n, grams, kcal, protein, carbs, fat }) => ({ foodId, name: n, grams, kcal, protein, carbs, fat }));
+  await db.runAsync('INSERT INTO saved_meals (name, items) VALUES (?, ?)', name, JSON.stringify(items));
+}
+
+export async function deleteSavedMeal(db: SQLiteDatabase, id: number): Promise<void> {
+  await db.runAsync('DELETE FROM saved_meals WHERE id = ?', id);
+}
+
+/** Nährwert-Summen je Tag (für Verlauf / Wochenschnitt). */
+export async function dailyTotals(db: SQLiteDatabase, from: string, to: string) {
+  return db.getAllAsync<{ date: string; kcal: number; protein: number; carbs: number; fat: number }>(
+    'SELECT date, SUM(kcal) AS kcal, SUM(protein) AS protein, SUM(carbs) AS carbs, SUM(fat) AS fat FROM food_log WHERE date BETWEEN ? AND ? GROUP BY date ORDER BY date',
+    from,
+    to,
+  );
+}
+
 // ---------- Backup ----------
 
 /** Kompletter Datenexport als JSON (für Backup / späteren Import). */
 export async function exportAll(db: SQLiteDatabase): Promise<string> {
-  const [settings, checkins, supplements, supplementLog, planDays, dailyLoad, garminActivities, zwoLibrary] = await Promise.all([
+  const [settings, checkins, supplements, supplementLog, planDays, dailyLoad, garminActivities, zwoLibrary, foods, foodLog, savedMeals] = await Promise.all([
     db.getAllAsync('SELECT * FROM settings'),
     db.getAllAsync('SELECT * FROM checkins ORDER BY date'),
     db.getAllAsync('SELECT * FROM supplements'),
@@ -365,6 +499,9 @@ export async function exportAll(db: SQLiteDatabase): Promise<string> {
     db.getAllAsync('SELECT * FROM daily_load ORDER BY date'),
     db.getAllAsync('SELECT * FROM garmin_activities ORDER BY date'),
     db.getAllAsync('SELECT * FROM zwo_library ORDER BY name'),
+    db.getAllAsync('SELECT * FROM foods ORDER BY id'),
+    db.getAllAsync('SELECT * FROM food_log ORDER BY date, id'),
+    db.getAllAsync('SELECT * FROM saved_meals ORDER BY id'),
   ]);
   return JSON.stringify(
     {
@@ -378,6 +515,9 @@ export async function exportAll(db: SQLiteDatabase): Promise<string> {
       dailyLoad,
       garminActivities,
       zwoLibrary,
+      foods,
+      foodLog,
+      savedMeals,
     },
     null,
     1,

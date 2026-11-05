@@ -39,6 +39,10 @@ Offizielle **Garmin Connect Personal API** (`src/lib/garmin.ts`, Zuordnung in `s
 
 `src/domain/resolve.ts`: 1. eigene .zwo aus der Bibliothek (Name passt zum TP-Titel) → 2. Struktur aus TP-Titel/-Beschreibung (`parseWorkoutText`: 30/15-Sätze, N×M @ %, Z2 mit TP-Dauer und Z2-Anhang) → 3. letzte gleichartige Einheit (Protokoll `workout_log`) → 4. Wochenvorlage. Gelb = letzter Satz/Intervall gestrichen, kein Reiz = Z2-Ersatz. „ZWO teilen“ erzeugt die Datei (`toZwo`) fürs iOS-Teilen-Menü. Bibliothek: Plan-Tab → „.zwo-Dateien importieren“.
 
+## Ernährung (MCI-Ersatz)
+
+Bildschirm „Ernährung“ (von Start/Heute aus): Tagesziel aus Training + Ampel (wie „Heute“), Mahlzeiten Frühstück/Mittag/Abend/Snacks/Training, Suche in eigenen Lebensmitteln + **Open Food Facts** (frei), **Barcode-Scanner** (expo-camera), eigene Lebensmittel, Schnell-Eintrag (nur kcal/Makros), **gespeicherte Mahlzeiten** (Meal-Prep mit Portionsfaktor), „Wie gestern“. Startliste mit Pascals Grundnahrungsmitteln (Richtwerte, per Scan exakt ersetzbar). Logik in `src/domain/food.ts`.
+
 ## Plan-Check & zwog-Schreibweise
 
 - `src/domain/plan-check.ts` prüft Ist + Plan gegen die Masterplan-Regeln: TSB-Grenze, Ramp Rate ≤ +5 CTL/Woche, nie zwei harte Tage am Stück, ≥ 2 Tage zwischen Q-Einheiten, max. 2 harte pro Woche, langer Z2 vor Q, Wochen-TSS-Sprung ≤ 15 % (Idee: domestique-Schutzregeln, eigener Code).
@@ -73,6 +77,6 @@ npx expo lint
 - [x] TrainingPeaks-Plan (iCal) + PMC mit 14-Tage-Prognose und Anpassung nach Gefühl
 - [x] Workout des Tages als .zwo (Bibliothek / TP / Vergangenheit), Profil & Zonen aus Garmin/Strava
 - [ ] Dashboard
-- [ ] v2: Ernährungstracking mit Barcode-Scanner (Open Food Facts), eigene Rezepte (MCI-Ersatz)
+- [x] v2: Ernährungstracking mit Barcode-Scanner (Open Food Facts), eigene Mahlzeiten (MCI-Ersatz)
 - [ ] v3: Gym-Log (Oberkörper A/B), Rad-Daten über Apple Health / Strava
 - [ ] v4: Wochenplan in der App bearbeiten, Cloud-Sync (Supabase), Auswertungen
