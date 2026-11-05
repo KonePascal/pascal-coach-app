@@ -269,7 +269,14 @@ export async function loadActivities(db: SQLiteDatabase, from: string, to: strin
     tss: number | null;
     np: number | null;
     avg_power: number | null;
-  }>('SELECT id, date, type, duration_min, tss, np, avg_power FROM garmin_activities WHERE date BETWEEN ? AND ?', from, to);
+    name: string;
+    start: string;
+    calories: number | null;
+  }>(
+    'SELECT id, date, type, duration_min, tss, np, avg_power, name, start, calories FROM garmin_activities WHERE date BETWEEN ? AND ? ORDER BY start',
+    from,
+    to,
+  );
   return rows.map((r) => ({
     id: r.id,
     date: r.date,
@@ -278,6 +285,9 @@ export async function loadActivities(db: SQLiteDatabase, from: string, to: strin
     tss: r.tss,
     np: r.np,
     avgPower: r.avg_power,
+    name: r.name,
+    start: r.start,
+    calories: r.calories,
   }));
 }
 

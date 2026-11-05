@@ -13,6 +13,7 @@ import { isoDate } from '@/domain/dates';
 import type { LibraryItem } from '@/domain/resolve';
 import { parseZwo, totalSeconds, workoutTss } from '@/domain/workout';
 import { WorkoutProfile } from '@/components/workout-card';
+import { WeekCalendar } from '@/components/week-calendar';
 import { pickZwoFiles, shareZwo } from '@/lib/zwo-files';
 import {
   DAY_TYPE_LABEL,
@@ -94,7 +95,7 @@ function Chips<T extends string>({
   );
 }
 
-export default function PlanScreen() {
+export default function WeekScreen() {
   const db = useSQLiteContext();
   const theme = useTheme();
   const [plan, setPlan] = useState<WeekPlan>(WEEK_TEMPLATE);
@@ -102,6 +103,8 @@ export default function PlanScreen() {
   const [open, setOpen] = useState<number | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
+  const [showTemplate, setShowTemplate] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
 
   const load = useCallback(async () => {
     const [p, s, lib] = await Promise.all([loadPlan(db), loadSettings(db), listLibrary(db)]);
@@ -172,12 +175,21 @@ export default function PlanScreen() {
       <SafeAreaView style={styles.safe} edges={['top']}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-            <ThemedText type="subtitle">Wochenplan</ThemedText>
-            <ThemedText type="small" themeColor="textSecondary">
-              {fmtHours(weekMin / 60)} Rad · ~{weekTss} TSS inkl. Gym (je 40) · Tippe einen Tag zum Bearbeiten
-            </ThemedText>
+            <ThemedText type="subtitle">Woche</ThemedText>
+            <WeekCalendar />
 
-            {WEEK_ORDER.map((day) => {
+            <Pressable onPress={() => setShowTemplate((v) => !v)}>
+              <ThemedText type="smallBold" themeColor="textSecondary" style={{ marginTop: Spacing.three }}>
+                {showTemplate ? '▾' : '▸'} WOCHENVORLAGE (nur wenn in TrainingPeaks nichts geplant ist)
+              </ThemedText>
+            </Pressable>
+            {showTemplate ? (
+              <ThemedText type="small" themeColor="textSecondary">
+                {fmtHours(weekMin / 60)} Rad · ~{weekTss} TSS inkl. Gym · Tippe einen Tag zum Bearbeiten. TP hat immer Vorrang.
+              </ThemedText>
+            ) : null}
+
+            {!showTemplate ? null : WEEK_ORDER.map((day) => {
               const p = plan[day];
               const editing = open === day && draft;
               return (
@@ -258,6 +270,12 @@ export default function PlanScreen() {
                 </Card>
               );
             })}
+            <Pressable onPress={() => setShowLibrary((v) => !v)}>
+              <ThemedText type="smallBold" themeColor="textSecondary" style={{ marginTop: Spacing.two }}>
+                {showLibrary ? '▾' : '▸'} WORKOUT-BIBLIOTHEK ({library.length} .zwo)
+              </ThemedText>
+            </Pressable>
+            {!showLibrary ? null : (
             <Card title={`Workout-Bibliothek (${library.length})`}>
               <ThemedText type="small" themeColor="textSecondary">
                 Deine eigenen .zwo-Dateien. Passt der Name zur TP-Einheit des Tages (z. B. „30/15 5 Sets 124“), zeigt „Heute“ genau diese Datei.
@@ -292,6 +310,7 @@ export default function PlanScreen() {
               })}
               <Button title="+ .zwo-Dateien importieren" variant="secondary" onPress={() => void importZwo()} />
             </Card>
+            )}
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>

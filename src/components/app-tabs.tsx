@@ -13,13 +13,18 @@ export default function AppTabs() {
       indicatorColor={colors.backgroundElement}
       labelStyle={{ selected: { color: colors.text } }}>
       <NativeTabs.Trigger name="index">
+        <NativeTabs.Trigger.Label>Start</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf={{ default: 'house', selected: 'house.fill' }} />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="heute">
         <NativeTabs.Trigger.Label>Heute</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf={{ default: 'sun.max', selected: 'sun.max.fill' }} />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="plan">
-        <NativeTabs.Trigger.Label>Plan</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon sf={{ default: 'calendar', selected: 'calendar' }} />
+      <NativeTabs.Trigger name="woche">
+        <NativeTabs.Trigger.Label>Woche</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="calendar" />
       </NativeTabs.Trigger>
 
       <NativeTabs.Trigger name="form">
@@ -27,13 +32,8 @@ export default function AppTabs() {
         <NativeTabs.Trigger.Icon sf="chart.xyaxis.line" />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="verlauf">
-        <NativeTabs.Trigger.Label>Verlauf</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon sf="chart.line.uptrend.xyaxis" />
-      </NativeTabs.Trigger>
-
       <NativeTabs.Trigger name="einstellungen">
-        <NativeTabs.Trigger.Label>Einstellungen</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Label>Mehr</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf={{ default: 'gearshape', selected: 'gearshape.fill' }} />
       </NativeTabs.Trigger>
     </NativeTabs>

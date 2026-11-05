@@ -100,3 +100,14 @@ describe('TrainingPeaks-Feed', () => {
     expect(classify('FTP-Test Kaltenbronn').dayType).toBe('qb');
   });
 });
+
+import { cleanTitle } from '../trainingpeaks';
+
+describe('TP-Titel', () => {
+  test('Datum + Wochentag vorne weg, 1h00 als Dauer', () => {
+    expect(cleanTitle('2026-11-05 Fr Z2 1h00 locker')).toBe('Z2 1h00 locker');
+    expect(parseDurationText('Z2 1h00 locker')).toBe(60);
+    const [e] = parseIcs('BEGIN:VEVENT\nUID:z\nDTSTART;VALUE=DATE:20261105\nSUMMARY:2026-11-05 Fr Z2 1h00 locker\nEND:VEVENT');
+    expect(e).toMatchObject({ title: 'Z2 1h00 locker', durationMin: 60, dayType: 'z2' });
+  });
+});

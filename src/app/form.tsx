@@ -7,9 +7,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PMC_COLORS, PmcChart } from '@/components/pmc-chart';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Card, LIGHT_COLOR, parseNum } from '@/components/ui';
+import { Card, LIGHT_COLOR, LIGHT_EMOJI, parseNum } from '@/components/ui';
+import { fmtHours } from '@/domain/readiness';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { setOverride } from '@/db/repo';
+import { getRecent, setOverride, type StoredCheckIn } from '@/db/repo';
 import { fromIso, labelDate } from '@/domain/dates';
 import { plannedFor } from '@/domain/load';
 import { checkPlan, rampRate } from '@/domain/plan-check';
@@ -47,9 +48,11 @@ export default function FormScreen() {
   const [edit, setEdit] = useState<string | null>(null);
   const [value, setValue] = useState('');
   const [showPast, setShowPast] = useState(false);
+  const [recent, setRecent] = useState<StoredCheckIn[]>([]);
 
   const sync = useCallback(async () => {
     setSyncing(true);
+    void getRecent(db, 14).then(setRecent);
     try {
       const m = await reload();
       if (!m) return;
@@ -236,6 +239,34 @@ export default function FormScreen() {
             {showPast ? past.map((r) => dayRow(r, 'actual')) : null}
           </Card>
 
+          <Card title="Morgenwerte · 14 Tage">
+            {recent.length === 0 ? (
+              <ThemedText type="small" themeColor="textSecondary">
+                Noch keine Check-ins.
+              </ThemedText>
+            ) : (
+              recent.map((r) => (
+                <View key={r.date} style={styles.recentRow}>
+                  <ThemedText type="small" style={{ width: 92 }}>
+                    {r.light ? LIGHT_EMOJI[r.light] : '⚪️'} {labelDate(fromIso(r.date))}
+                  </ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary" style={{ flex: 1, textAlign: 'right' }}>
+                    {[
+                      r.hrv != null && `HRV ${Math.round(r.hrv)}`,
+                      r.rhr != null && `RP ${Math.round(r.rhr)}`,
+                      r.sleepHours != null && fmtHours(r.sleepHours),
+                      r.weight != null && `${r.weight} kg`,
+                      r.symptoms && '🤒',
+                      r.alcohol && '🍺',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </ThemedText>
+                </View>
+              ))
+            )}
+          </Card>
+
           {syncMsg ? (
             <ThemedText type="small" themeColor="textSecondary">
               {syncMsg}
@@ -262,5 +293,6 @@ const styles = StyleSheet.create({
   editRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two, paddingTop: Spacing.two, alignItems: 'center' },
   tssInput: { width: 70, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, fontSize: 17, fontWeight: '600' },
   pill: { backgroundColor: '#3c87f7', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 16 },
+  recentRow: { flexDirection: 'row', paddingVertical: 3 },
   pillGrey: { backgroundColor: '#8883', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 16 },
 });

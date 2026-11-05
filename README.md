@@ -20,11 +20,11 @@ Später als richtige App (ohne Laptop): Apple Developer Account + `npx eas-cli@l
 
 | Tab | Inhalt |
 |---|---|
-| **Heute** | HRV, Ruhepuls, Schlaf-Score/-dauer, Bevel-Erholung, Gewicht, Infekt-/Alkohol-Schalter → Ampel nach Entscheidungshierarchie, angepasste Einheit mit Watt aus FTP, kcal/KH-Ziel, fällige Supplements zum Abhaken |
-| **Plan** | Wochenplan Mo–So bearbeiten: Typ, Titel, Details mit `{w:%}`-Platzhaltern, Dauer, TSS, Ø-Leistung, Gym A/B, Koffein |
-| **Form** | PMC: Fitness (CTL), Müdigkeit (ATL), Form (TSB) – Ist aus Garmin, Prognose 14 Tage aus TrainingPeaks-Plan; Plan-TSS pro Tag anpassbar (Frei / −25 % / eigener Wert), Warnung unter der TSB-Grenze |
-| **Verlauf** | 7-Tage-Schnitt (HRV, Ruhepuls, Schlaf, Gewicht inkl. Trend zur Vorwoche) und alle Check-ins |
-| **Einstellungen** | FTP, Gewicht, Erhalt/Defizit/Makros, Ampel-Baselines, Erinnerungen, Supplements bearbeiten, Backup-Export (JSON) |
+| **Start** | Übersicht wie TrainingPeaks: Bereitschaft, Fitness/Form/Ermüdung mit Trend, Aufbau-Tempo (Ramp Rate), Erholung (HRV/Ruhepuls/Schlaf mit Band), heutiges Training mit Profil, Wochen-Snapshot (Dauer/TSS, Umsetzung), Supplements |
+| **Heute** | Morgen-Check (Garmin automatisch), Ampel, Einheit + Workout (.zwo), Plan vs. Ist, Essen, Supplements |
+| **Woche** | Kalenderwoche mit Navigation: TP-Plan vs. Garmin-Ist je Tag, Umsetzung (grün/gelb/orange/rot/grau), Details + ZWO; darunter Wochenvorlage (Fallback) und .zwo-Bibliothek |
+| **Form** | PMC-Chart, Prognose, Plan-Check, TSS je Tag anpassen, Morgenwerte 14 Tage |
+| **Mehr** | Garmin, TrainingPeaks, PMC-Startwert, Profil & Zonen, Ernährung, Ampel, Erinnerungen, Supplements, Backup |
 
 ## Garmin
 

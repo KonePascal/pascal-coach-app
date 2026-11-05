@@ -18,6 +18,9 @@ export interface StoredActivity {
   tss: number | null;
   np: number | null;
   avgPower: number | null;
+  name?: string;
+  start?: string;
+  calories?: number | null;
 }
 
 export interface LoadOverride {
@@ -35,8 +38,8 @@ export interface LoadContext {
   gymTss: number;
 }
 
-const isRide = (t: string) => /cycl|ride|bik|virtual|indoor|gravel|mtb|road/i.test(t);
-const isStrength = (t: string) => /strength|kraft|gym|weight/i.test(t);
+export const isRide = (t: string) => /cycl|ride|bik|virtual|indoor|gravel|mtb|road/i.test(t);
+export const isStrength = (t: string) => /strength|kraft|gym|weight/i.test(t);
 
 export function activityTss(a: StoredActivity, ftp: number, gymTss: number): number {
   if (a.tss !== null) return Math.round(a.tss);

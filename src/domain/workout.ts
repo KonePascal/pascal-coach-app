@@ -168,7 +168,9 @@ export function parseWorkoutText(title: string, description = '', durationMin?: 
 // ---------- zwog-Schreibweise (Zeile für Zeile) ----------
 
 const DUR = String.raw`(\d+(?:[.,]\d+)?)\s*(min|m|s|sek|sec|h)\b`;
-const PWR = String.raw`(\d{2,4})\s*(%|w)(?:\s*ftp)?`;
+const PWR = String.raw`~?\s*(\d{2,4})\s*(%|w)(?:\s*ftp)?`;
+/** bis zu zwei Füllwörter zwischen Dauer und „@“, z. B. „57 min Z2 @ ~180 W“ */
+const FILL = String.raw`(?:\s+[a-zäöü0-9-]+){0,2}`;
 
 function toSec(n: string, unit: string): number {
   const v = Number(n.replace(',', '.'));
@@ -193,9 +195,27 @@ function toFrac(n: string, unit: string, ftp: number): number {
 export function parseBlockText(text: string, ftp: number): Step[] | null {
   if (!text) return null;
   const steps: Step[] = [];
-  for (const raw of text.split(/\n|;/)) {
-    const line = raw.trim().toLowerCase().replace(/×/g, 'x').replace(/^[-•*]\s*/, '');
+  // Zeilen, Semikolons und Sätze („WU 15 min. 5 x (…). Danach …“) trennen
+  for (const raw of text.split(/\n|;|\.\s+(?=[a-zäöüA-ZÄÖÜ0-9~(])/)) {
+    const line = raw
+      .trim()
+      .toLowerCase()
+      .replace(/×/g, 'x')
+      .replace(/^[-•*]\s*/, '')
+      .replace(/\b(\d{1,2}):([0-5]\d)(?=\s*(?:@|at|bei))/g, (_, m: string, sec: string) => `${Number(m) * 60 + Number(sec)}s`);
     if (!line) continue;
+
+    // „WU 15 min“ / „CD 8 min“ ohne Wattangabe
+    const wu = new RegExp(String.raw`^(?:wu|warm[- ]?up|einfahren|aufwärmen|aufwaermen)\b[^@]*?${DUR}`).exec(line);
+    if (wu && !line.includes('@')) {
+      steps.push({ kind: 'warmup', sec: toSec(wu[1], wu[2]), from: 0.45, to: 0.75 });
+      continue;
+    }
+    const cd = new RegExp(String.raw`^(?:cd|cool[- ]?down|ausfahren|auslockern)\b[^@]*?${DUR}`).exec(line);
+    if (cd && !line.includes('@')) {
+      steps.push({ kind: 'cooldown', sec: toSec(cd[1], cd[2]), from: 0.6, to: 0.4 });
+      continue;
+    }
 
     const iv = new RegExp(String.raw`^(\d{1,2})\s*x\s*\(?\s*${DUR}\s*(?:@|at|bei)\s*${PWR}\s*(?:[,/+]|und|then)\s*${DUR}\s*(?:@|at|bei)\s*${PWR}`).exec(line);
     if (iv) {
@@ -225,7 +245,7 @@ export function parseBlockText(text: string, ftp: number): Step[] | null {
       steps.push({ kind, sec, from, to });
       continue;
     }
-    const steady = new RegExp(String.raw`${DUR}\s*(?:@|at|bei)\s*${PWR}`).exec(line);
+    const steady = new RegExp(String.raw`${DUR}${FILL}\s*(?:@|at|bei)\s*${PWR}`).exec(line);
     if (steady) {
       steps.push({ kind: 'steady', sec: toSec(steady[1], steady[2]), power: toFrac(steady[3], steady[4], ftp) });
       continue;

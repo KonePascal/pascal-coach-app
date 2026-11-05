@@ -145,3 +145,22 @@ describe('zwog-Schreibweise in der TP-Beschreibung', () => {
     expect(w.steps[1]).toMatchObject({ repeat: 4, onSec: 480, on: 1.06 });
   });
 });
+
+describe('Pascals TP-Schreibweise (Screenshot 03.11.)', () => {
+  const desc =
+    'Q-B VO2 + langer Z2-Anhang. FTP 289 W. WU 15 min. 5 x (5:00 @ 318 W / 3:00 @ 160 W). Danach 57 min Z2 @ ~180 W, HF unter 150. CD 8 min. Bein-Check nach Intervall 1: schwer → 4x5, Watt halten.';
+
+  test('Beschreibung → exakt die TP-Schritte', () => {
+    const w = parseWorkoutText('Q-B V2 5x5', desc, 120, 289)!;
+    expect(w.steps.map((s) => s.kind)).toEqual(['warmup', 'intervals', 'steady', 'cooldown']);
+    expect(w.steps[0]).toMatchObject({ sec: 900 });
+    expect(w.steps[1]).toMatchObject({ repeat: 5, onSec: 300, offSec: 180 });
+    const iv = w.steps[1] as { on: number; off: number };
+    expect(Math.round(iv.on * 289)).toBe(318);
+    expect(Math.round(iv.off * 289)).toBe(160);
+    expect(w.steps[2]).toMatchObject({ sec: 57 * 60 });
+    expect(Math.round((w.steps[2] as { power: number }).power * 289)).toBe(180);
+    expect(w.steps[3]).toMatchObject({ kind: 'cooldown', sec: 480 });
+    expect(totalSeconds(w)).toBe(120 * 60); // 15 + 40 + 57 + 8 = 120 min wie geplant
+  });
+});

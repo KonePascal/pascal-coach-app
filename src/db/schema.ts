@@ -136,6 +136,20 @@ const MIGRATIONS: ((db: SQLiteDatabase) => Promise<void>)[] = [
       );
     `);
   },
+  // v6 – Pascals aktueller Supplement-Plan (05.11.2026) ersetzt die alte Liste
+  async (db) => {
+    await db.execAsync('DELETE FROM supplement_log; DELETE FROM supplements;');
+    for (const s of DEFAULT_SUPPLEMENTS) {
+      await db.runAsync(
+        'INSERT INTO supplements (name, dose, time, rule, active) VALUES (?, ?, ?, ?, ?)',
+        s.name,
+        s.dose,
+        s.time,
+        s.rule,
+        s.active ? 1 : 0,
+      );
+    }
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

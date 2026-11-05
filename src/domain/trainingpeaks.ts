@@ -19,6 +19,14 @@ export interface TpEvent {
   dayType: DayType;
 }
 
+/** „2026-11-05 Fr Z2 1h00 locker“ → „Z2 1h00 locker“ (Datum/Wochentag vorne entfernen) */
+export function cleanTitle(title: string): string {
+  return title
+    .replace(/^\s*\d{4}-\d{2}-\d{2}\s*/, '')
+    .replace(/^(?:mo|di|mi|do|fr|sa|so|mon|tue|wed|thu|fri|sat|sun)\.?\s+/i, '')
+    .trim();
+}
+
 /** webcal://… → https://… */
 export function normalizeFeedUrl(url: string): string {
   const u = url.trim();
@@ -54,6 +62,8 @@ export function parseDurationText(text: string): number | null {
     /(?:planned\s*(?:time|duration)|duration|dauer|zeit|time)\s*[:=]?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/i.exec(text) ??
     /(?:planned\s*(?:time|duration)|duration|dauer|zeit|time)\s*[:=]?\s*(\d{1,2})\s*h\s*(\d{1,2})?/i.exec(text);
   if (labeled) return Number(labeled[1]) * 60 + Number(labeled[2] ?? 0);
+  const hm2 = /\b(\d{1,2})\s*h\s*([0-5]\d)\b/i.exec(text); // „1h00“, „2h30“
+  if (hm2) return Number(hm2[1]) * 60 + Number(hm2[2]);
   const min = /(\d{2,3})\s*(?:min|minuten|minutes)\b/i.exec(text);
   if (min) return Number(min[1]);
   const hm = /\b(\d):([0-5]\d)(?::[0-5]\d)?\b/.exec(text);
@@ -90,7 +100,7 @@ export function parseIcs(ics: string): TpEvent[] {
     else if (line === 'END:VEVENT' && cur) {
       const start = cur.DTSTART ? parseDate(cur.DTSTART.prop, cur.DTSTART.value) : null;
       const end = cur.DTEND ? parseDate(cur.DTEND.prop, cur.DTEND.value) : null;
-      const title = unescapeText(cur.SUMMARY?.value ?? '');
+      const title = cleanTitle(unescapeText(cur.SUMMARY?.value ?? ''));
       const description = unescapeText(cur.DESCRIPTION?.value ?? '');
       if (start?.date && title) {
         const { kind, dayType } = classify(title, description);
