@@ -77,3 +77,19 @@ describe('Garmin-Zuordnung', () => {
     expect(jwtExpiry('kaputt')).toBeNull();
   });
 });
+
+import { parseProfile } from '../garmin-parse';
+
+describe('Garmin-Profil', () => {
+  test('Gewicht in Gramm, Rad-Zonen bevorzugt', () => {
+    const p = parseProfile(
+      { userData: { weight: 82500, height: 175, lactateThresholdHeartRate: 172, vo2MaxCycling: 56 } },
+      [
+        { sport: 'DEFAULT', zone2Floor: 120, zone3Floor: 140, zone4Floor: 160, zone5Floor: 175, maxHeartRateUsed: 190 },
+        { sport: 'CYCLING', zone2Floor: 140, zone3Floor: 154, zone4Floor: 161, zone5Floor: 171, maxHeartRateUsed: 188 },
+      ],
+    );
+    expect(p).toMatchObject({ weightKg: 82.5, heightCm: 175, lthr: 172, maxHr: 188, vo2maxCycling: 56, hrFloors: [140, 154, 161, 171], hrZoneSport: 'CYCLING' });
+    expect(p.ftp).toBeNull();
+  });
+});

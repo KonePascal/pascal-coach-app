@@ -38,6 +38,10 @@ export interface Settings {
   pmcSeed: { date: string; ctl: number; atl: number }; // Startwert fürs PMC (aus TP)
   gymTss: number; // Pauschale je Krafteinheit
   tsbLimit: number; // Leitplanke (Herbst: −30)
+  heightCm: number;
+  lthr: number; // Schwellenpuls
+  maxHr: number;
+  hrFloors: number[]; // Untergrenzen HF-Zonen Z2…Z5
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -60,4 +64,9 @@ export const DEFAULT_SETTINGS: Settings = {
   pmcSeed: { date: '2026-10-27', ctl: 54, atl: 44 }, // TP-Screenshot 27.10.2026
   gymTss: 40,
   tsbLimit: -30,
+  // aus Strava (manuell gesetzte Zonen) bzw. FTP-Test 06.10.2026
+  heightCm: 175,
+  lthr: 172,
+  maxHr: 188,
+  hrFloors: [140, 154, 161, 171],
 };

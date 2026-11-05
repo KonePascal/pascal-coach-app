@@ -3,6 +3,8 @@ import * as SecureStore from 'expo-secure-store';
 import { isoDate } from '@/domain/dates';
 import {
   combineMorning,
+  parseProfile,
+  type GarminProfile,
   jwtExpiry,
   parseActivities,
   trainingKcal,
@@ -145,4 +147,14 @@ export async function fetchActivitiesRange(from: string, to: string): Promise<Ga
     if (acts.length < 100) break;
   }
   return all;
+}
+
+/** Profil (Gewicht, Größe, LTHR, VO2max …) und HF-Zonen aus Garmin. */
+export async function fetchProfile(): Promise<{ profile: GarminProfile; errors: string[] }> {
+  const errors: string[] = [];
+  const [settings, zones] = await Promise.all([
+    safe(() => get('/userprofile-service/userprofile/settings'), errors),
+    safe(() => get('/biometric-service/heartRateZones/v2'), errors),
+  ]);
+  return { profile: parseProfile(settings ?? {}, zones ?? []), errors };
 }

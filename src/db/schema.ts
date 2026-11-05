@@ -118,6 +118,24 @@ const MIGRATIONS: ((db: SQLiteDatabase) => Promise<void>)[] = [
       );
     `);
   },
+  // v5 – Workouts: eigene .zwo-Bibliothek + Protokoll der Tages-Einheiten (für „wie letztes Mal“)
+  async (db) => {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS zwo_library (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL,
+        xml        TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS workout_log (
+        date     TEXT PRIMARY KEY NOT NULL,
+        day_type TEXT NOT NULL,
+        name     TEXT NOT NULL,
+        source   TEXT NOT NULL,
+        xml      TEXT NOT NULL
+      );
+    `);
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

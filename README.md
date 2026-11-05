@@ -35,6 +35,14 @@ Offizielle **Garmin Connect Personal API** (`src/lib/garmin.ts`, Zuordnung in `s
 - **TP-Plan** über den Premium-Kalender-Feed (TP → Settings → Account → Calendar). `src/domain/trainingpeaks.ts` parst die .ics, erkennt Einheitentyp (30/15 → Q-A, V2/S2/S1 → Q-B, Kraft, Z2/lang), Dauer und TSS (falls in der Beschreibung, sonst geschätzt: Std × IF² × 100).
 - **PMC** (`src/domain/pmc.ts`, `src/domain/load.ts`): Startwert CTL/ATL aus TP, danach Tages-TSS: Vergangenheit = Korrektur > Garmin (TSS, sonst aus NP/FTP, Kraft pauschal); Zukunft = eigene Anpassung > TP > Wochenvorlage. TSB = CTL − ATL vom Vortag (wie TP).
 
+## Workout des Tages + .zwo
+
+`src/domain/resolve.ts`: 1. eigene .zwo aus der Bibliothek (Name passt zum TP-Titel) → 2. Struktur aus TP-Titel/-Beschreibung (`parseWorkoutText`: 30/15-Sätze, N×M @ %, Z2 mit TP-Dauer und Z2-Anhang) → 3. letzte gleichartige Einheit (Protokoll `workout_log`) → 4. Wochenvorlage. Gelb = letzter Satz/Intervall gestrichen, kein Reiz = Z2-Ersatz. „ZWO teilen“ erzeugt die Datei (`toZwo`) fürs iOS-Teilen-Menü. Bibliothek: Plan-Tab → „.zwo-Dateien importieren“.
+
+## Profil & Zonen
+
+Leistungszonen nach Coggan aus der FTP (`src/domain/zones.ts`, identisch zu Strava/TP), HF-Zonen aus Untergrenzen Z2–Z5. Startwerte aus Strava; „Aus Garmin übernehmen“ holt Gewicht, Größe, LTHR, HFmax, HF-Zonen (Rad bevorzugt).
+
 ## Regeln (in `src/domain/`)
 
 - **Ampel** (`readiness.ts`): HRV-Trend → Ruhepuls → Schlaf. Zwei rote Marker → rot (Z1/frei). Ein rot oder zwei gelb → gelb (Q −1 Satz, Z2 −25 %). Infektzeichen → rot, kein Reiz. Alkohol → kein Q.
@@ -58,6 +66,8 @@ npx expo lint
 - [x] Sprint 1: Wochenplan bearbeitbar, Vorschau nächste 2 Tage, Backup-Export
 - [x] Garmin-Auto-Sync über die offizielle Personal API (HRV, Ruhepuls, Schlaf, Body Battery, Aktivitäten)
 - [x] TrainingPeaks-Plan (iCal) + PMC mit 14-Tage-Prognose und Anpassung nach Gefühl
+- [x] Workout des Tages als .zwo (Bibliothek / TP / Vergangenheit), Profil & Zonen aus Garmin/Strava
+- [ ] Dashboard
 - [ ] v2: Ernährungstracking mit Barcode-Scanner (Open Food Facts), eigene Rezepte (MCI-Ersatz)
 - [ ] v3: Gym-Log (Oberkörper A/B), Rad-Daten über Apple Health / Strava
 - [ ] v4: Wochenplan in der App bearbeiten, Cloud-Sync (Supabase), Auswertungen

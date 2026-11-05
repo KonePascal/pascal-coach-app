@@ -201,3 +201,33 @@ function base64UrlDecode(s: string): string {
   }
   return out;
 }
+
+export interface GarminProfile {
+  weightKg: number | null;
+  heightCm: number | null;
+  lthr: number | null;
+  maxHr: number | null;
+  ftp: number | null;
+  vo2maxCycling: number | null;
+  hrFloors: number[] | null; // Untergrenzen Z2…Z5
+  hrZoneSport: string | null;
+}
+
+/** Profil-Einstellungen + HF-Zonen (bevorzugt Rad, sonst Standard). */
+export function parseProfile(settings: Json, hrZones: Json): GarminProfile {
+  const grams = num(settings, ['userData.weight'], ['weight'], [30000, 200000]);
+  const kg = grams ?? num(settings, ['userData.weight'], ['weight'], [30, 200]);
+  const zones = Array.isArray(hrZones) ? hrZones.filter(isObj) : isObj(hrZones) ? [hrZones] : [];
+  const z = zones.find((x) => /cycl|bik/i.test(String(x.sport ?? ''))) ?? zones.find((x) => /default/i.test(String(x.sport ?? ''))) ?? zones[0];
+  const floors = z ? [2, 3, 4, 5].map((i) => num(z, [`zone${i}Floor`], [], [60, 230])) : [];
+  return {
+    weightKg: kg === null ? null : grams !== null ? Math.round(grams / 100) / 10 : kg,
+    heightCm: num(settings, ['userData.height'], ['height'], [120, 230]),
+    lthr: num(settings, ['userData.lactateThresholdHeartRate'], ['lactateThresholdHeartRate'], [100, 220]) ?? (z ? num(z, ['lactateThresholdHeartRateUsed'], [], [100, 220]) : null),
+    maxHr: z ? num(z, ['maxHeartRateUsed'], [], [120, 230]) : null,
+    ftp: num(settings, ['userData.functionalThresholdPower', 'userData.ftp'], ['functionalThresholdPower', 'ftpAutoDetected'], [80, 600]),
+    vo2maxCycling: num(settings, ['userData.vo2MaxCycling'], ['vo2MaxCycling'], [20, 95]),
+    hrFloors: floors.length === 4 && floors.every((f) => f !== null) ? (floors as number[]) : null,
+    hrZoneSport: z ? String(z.sport ?? '') : null,
+  };
+}

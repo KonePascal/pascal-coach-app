@@ -8,7 +8,12 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Button, Card, NumberField, Toggle, parseNum } from '@/components/ui';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { listSupplements, loadPlan, loadSettings, savePlanDay } from '@/db/repo';
+import { addToLibrary, listLibrary, listSupplements, loadPlan, loadSettings, removeFromLibrary, savePlanDay } from '@/db/repo';
+import { isoDate } from '@/domain/dates';
+import type { LibraryItem } from '@/domain/resolve';
+import { parseZwo, totalSeconds, workoutTss } from '@/domain/workout';
+import { WorkoutProfile } from '@/components/workout-card';
+import { pickZwoFiles, shareZwo } from '@/lib/zwo-files';
 import {
   DAY_TYPE_LABEL,
   WEEKDAY_NAME,
@@ -96,11 +101,13 @@ export default function PlanScreen() {
   const [ftp, setFtp] = useState(289);
   const [open, setOpen] = useState<number | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [library, setLibrary] = useState<LibraryItem[]>([]);
 
   const load = useCallback(async () => {
-    const [p, s] = await Promise.all([loadPlan(db), loadSettings(db)]);
+    const [p, s, lib] = await Promise.all([loadPlan(db), loadSettings(db), listLibrary(db)]);
     setPlan(p);
     setFtp(s.ftp);
+    setLibrary(lib);
   }, [db]);
 
   useFocusEffect(
@@ -131,6 +138,30 @@ export default function PlanScreen() {
     Alert.alert('Zurücksetzen?', `${WEEKDAY_NAME[day]} auf die Standardvorlage setzen.`, [
       { text: 'Abbrechen', style: 'cancel' },
       { text: 'Zurücksetzen', style: 'destructive', onPress: () => setDraft(toDraft(WEEK_TEMPLATE[day])) },
+    ]);
+
+  const importZwo = async () => {
+    const { ok, failed } = await pickZwoFiles();
+    for (const z of ok) await addToLibrary(db, z.name, z.xml);
+    setLibrary(await listLibrary(db));
+    if (ok.length || failed.length) {
+      Alert.alert(
+        'Import',
+        [ok.length ? `${ok.length} Workout(s) übernommen.` : '', failed.length ? `Nicht lesbar: ${failed.join(', ')}` : '']
+          .filter(Boolean)
+          .join('\n'),
+      );
+    }
+  };
+
+  const removeZwo = (item: LibraryItem) =>
+    Alert.alert('Entfernen?', item.name, [
+      { text: 'Abbrechen', style: 'cancel' },
+      {
+        text: 'Entfernen',
+        style: 'destructive',
+        onPress: () => void removeFromLibrary(db, item.id).then(async () => setLibrary(await listLibrary(db))),
+      },
     ]);
 
   const weekTss = WEEK_ORDER.reduce<number>((s, d) => s + plan[d].tss + (plan[d].gym ? 40 : 0), 0);
@@ -227,6 +258,40 @@ export default function PlanScreen() {
                 </Card>
               );
             })}
+            <Card title={`Workout-Bibliothek (${library.length})`}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Deine eigenen .zwo-Dateien. Passt der Name zur TP-Einheit des Tages (z. B. „30/15 5 Sets 124“), zeigt „Heute“ genau diese Datei.
+              </ThemedText>
+              {library.map((item) => {
+                const w = parseZwo(item.xml);
+                return (
+                  <View key={item.id} style={styles.libItem}>
+                    <View style={styles.row}>
+                      <ThemedText type="smallBold" style={{ flex: 1 }}>
+                        {item.name}
+                      </ThemedText>
+                      <ThemedText type="small" themeColor="textSecondary">
+                        {w ? `${fmtHours(totalSeconds(w) / 3600)} · ${workoutTss(w)} TSS` : ''}
+                      </ThemedText>
+                    </View>
+                    {w ? <WorkoutProfile workout={w} height={32} /> : null}
+                    <View style={styles.row}>
+                      <Pressable onPress={() => w && void shareZwo(w, isoDate(new Date()))}>
+                        <ThemedText type="small" style={{ color: '#3c87f7' }}>
+                          Teilen
+                        </ThemedText>
+                      </Pressable>
+                      <Pressable onPress={() => removeZwo(item)}>
+                        <ThemedText type="small" style={{ color: '#E5484D' }}>
+                          Entfernen
+                        </ThemedText>
+                      </Pressable>
+                    </View>
+                  </View>
+                );
+              })}
+              <Button title="+ .zwo-Dateien importieren" variant="secondary" onPress={() => void importZwo()} />
+            </Card>
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -244,4 +309,5 @@ const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
   multi: { minHeight: 80, borderRadius: 10, padding: Spacing.three, fontSize: 15, textAlignVertical: 'top' },
   row: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: Spacing.one },
+  libItem: { gap: 4, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: '#8884' },
 });

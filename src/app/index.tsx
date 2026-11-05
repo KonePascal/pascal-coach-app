@@ -1,6 +1,6 @@
 import { useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -25,7 +25,10 @@ import {
   listSupplements,
   loadPlan,
   loadSettings,
+  listLibrary,
   loadTpEvents,
+  logWorkout,
+  workoutHistory,
   saveActivities,
   saveGarminRaw,
   takenOn,
@@ -38,7 +41,10 @@ import type { GarminActivity } from '@/domain/garmin-parse';
 import { addDays } from '@/domain/pmc';
 import { tpToPlanned, type TpEvent } from '@/domain/trainingpeaks';
 import { nutritionFor } from '@/domain/nutrition';
-import { DAY_TYPE_LABEL, WEEK_TEMPLATE, sessionFor, upcoming, type WeekPlan } from '@/domain/plan';
+import { DAY_TYPE_LABEL, WEEK_TEMPLATE, plannedFor as plannedDay, sessionFor, upcoming, type WeekPlan } from '@/domain/plan';
+import { resolveWorkout, type LibraryItem, type LoggedWorkout } from '@/domain/resolve';
+import { parseWorkoutText, reduceWorkout, toZwo } from '@/domain/workout';
+import { WorkoutCard } from '@/components/workout-card';
 import { evaluate, fmtHours } from '@/domain/readiness';
 import { isDue, type Supplement } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type Baselines, type CheckIn, type Settings } from '@/domain/types';
@@ -115,6 +121,8 @@ export default function TodayScreen() {
   const [garmin, setGarmin] = useState<GarminState>({ status: 'idle', activities: [] });
   const syncing = useRef(false);
   const [tp, setTp] = useState<TpEvent[]>([]);
+  const [library, setLibrary] = useState<LibraryItem[]>([]);
+  const [wHistory, setWHistory] = useState<LoggedWorkout[]>([]);
   const pmc = usePmc();
 
   const load = useCallback(async (opts?: { keepForm?: boolean }) => {
@@ -128,6 +136,8 @@ export default function TodayScreen() {
       loadTpEvents(db, date, addDays(date, 2)),
     ]);
     setTp(ev);
+    setLibrary(await listLibrary(db));
+    setWHistory(await workoutHistory(db));
     void pmc.reload();
     setSettings(s);
     setPlan(p);
@@ -242,6 +252,42 @@ export default function TodayScreen() {
   const session = sessionFor(today, readiness, settings.ftp, plan, tpToday);
   const next = upcoming(today, 2, plan, settings.ftp, tpFor);
   const pmcToday = pmc.model?.rows.find((r) => r.date === date);
+
+  // Workout des Tages (Bibliothek > TP-Text > letzte gleichartige Einheit > Vorlage), dann an die Ampel angepasst
+  const resolved = useMemo(
+    () =>
+      resolveWorkout({
+        date,
+        tp: tp.filter((e) => e.date === date),
+        planned: tpToday ?? plannedDay(today, plan),
+        library,
+        history: wHistory,
+        ftp: settings.ftp,
+      }),
+    [date, tp, tpToday, today, plan, library, wHistory, settings.ftp],
+  );
+  const isQ = session.dayType === 'qa' || session.dayType === 'qb';
+  let shown = resolved;
+  let workoutNote: string | undefined;
+  if (resolved && readiness.light === 'red' && session.adjusted) {
+    shown = null;
+  } else if (resolved && session.adjusted && session.dayType === 'z2' && (tpToday?.dayType === 'qa' || tpToday?.dayType === 'qb' || plannedDay(today, plan).dayType.startsWith('q'))) {
+    const z2 = parseWorkoutText('Z2 statt Q', '', 70, settings.ftp);
+    shown = z2 ? { workout: z2, source: resolved.source, detail: 'Ersatz für die Q-Einheit' } : null;
+    workoutNote = 'Kein Reiz heute – Q verschieben (≥ 2 Tage Abstand zur nächsten).';
+  } else if (resolved && readiness.light === 'yellow' && isQ) {
+    shown = { ...resolved, workout: reduceWorkout(resolved.workout) };
+    workoutNote = 'Gelb: letzter Satz/letztes Intervall gestrichen, Watt halten.';
+  }
+
+  // Original-Workout protokollieren → Grundlage für „wie letztes Mal“
+  const logKey = resolved ? `${date}|${resolved.workout.name}|${resolved.source}` : '';
+  useEffect(() => {
+    if (!resolved || resolved.source === 'Vergangenheit') return;
+    const dayType = tpToday?.dayType ?? plannedDay(today, plan).dayType;
+    void logWorkout(db, { date, dayType, name: resolved.workout.name, source: resolved.source, xml: toZwo(resolved.workout) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logKey]);
   const food = nutritionFor(session, readiness, settings, parseNum(form.activityKcal) ?? stored?.garminKcal);
   const dueSupps = supps.filter((s) => isDue(s, today, session, checkin));
 
@@ -389,6 +435,8 @@ export default function TodayScreen() {
                 <Row label="Dauer · TSS" value={`${fmtHours(session.durationMin / 60)} · ~${session.tss}`} />
               ) : null}
             </Card>
+
+            {shown ? <WorkoutCard resolved={shown} ftp={settings.ftp} date={date} note={workoutNote} /> : null}
 
             {garmin.activities.length ? (
               <Card title="Heute absolviert (Garmin)">

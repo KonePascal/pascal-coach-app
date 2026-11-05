@@ -33,7 +33,8 @@ import { parseTime } from '@/domain/dates';
 import { fetchTpFeed } from '@/lib/trainingpeaks';
 import { RULE_LABEL, type Supplement, type SupplementRule } from '@/domain/supplements';
 import { DEFAULT_SETTINGS, type Settings } from '@/domain/types';
-import { getApiKey, setApiKey, testConnection } from '@/lib/garmin';
+import { fetchProfile, getApiKey, setApiKey, testConnection } from '@/lib/garmin';
+import { fmtZone, hrZonesFromFloors, powerZones } from '@/domain/zones';
 import { ensurePermission, rescheduleAll } from '@/lib/notifications';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -53,6 +54,7 @@ export default function SettingsScreen() {
   const [garminInfo, setGarminInfo] = useState<string | null>(null);
   const [tpInfo, setTpInfo] = useState<string | null>(null);
   const [tpBusy, setTpBusy] = useState(false);
+  const [profileInfo, setProfileInfo] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [st, sp] = await Promise.all([loadSettings(db), listSupplements(db)]);
@@ -60,6 +62,13 @@ export default function SettingsScreen() {
     setNum({
       ftp: String(st.ftp),
       weightKg: String(st.weightKg),
+      heightCm: String(st.heightCm),
+      lthr: String(st.lthr),
+      maxHr: String(st.maxHr),
+      hr2: String(st.hrFloors[0]),
+      hr3: String(st.hrFloors[1]),
+      hr4: String(st.hrFloors[2]),
+      hr5: String(st.hrFloors[3]),
       maintenanceKcal: String(st.maintenanceKcal),
       deficitKcal: String(st.deficitKcal),
       proteinG: String(st.proteinG),
@@ -148,6 +157,32 @@ export default function SettingsScreen() {
     }
   };
 
+  const pullGarminProfile = async () => {
+    setProfileInfo('Lade Profil aus Garmin …');
+    try {
+      const { profile: p, errors } = await fetchProfile();
+      const upd: Record<string, string> = {};
+      const found: string[] = [];
+      if (p.weightKg) (upd.weightKg = String(p.weightKg)), found.push(`Gewicht ${p.weightKg} kg`);
+      if (p.heightCm) (upd.heightCm = String(p.heightCm)), found.push(`Größe ${p.heightCm} cm`);
+      if (p.lthr) (upd.lthr = String(p.lthr)), found.push(`LTHR ${p.lthr}`);
+      if (p.maxHr) (upd.maxHr = String(p.maxHr)), found.push(`HFmax ${p.maxHr}`);
+      if (p.ftp) (upd.ftp = String(p.ftp)), found.push(`FTP ${p.ftp} W`);
+      if (p.hrFloors) {
+        [upd.hr2, upd.hr3, upd.hr4, upd.hr5] = p.hrFloors.map(String);
+        found.push(`HF-Zonen (${p.hrZoneSport || 'Garmin'})`);
+      }
+      setNum((prev) => ({ ...prev, ...upd }));
+      setProfileInfo(
+        found.length
+          ? `Übernommen: ${found.join(' · ')}${p.vo2maxCycling ? ` · VO2max Rad ${p.vo2maxCycling}` : ''}\nPrüfen und unten „Speichern“ tippen.`
+          : `Keine Profildaten gefunden.${errors.length ? ' ' + errors.join(' | ') : ''}`,
+      );
+    } catch (e) {
+      setProfileInfo(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const disconnectGarmin = () =>
     Alert.alert('Garmin trennen?', 'Der Schlüssel wird vom iPhone gelöscht.', [
       { text: 'Abbrechen', style: 'cancel' },
@@ -181,6 +216,10 @@ export default function SettingsScreen() {
       ...s,
       ftp: n('ftp', s.ftp),
       weightKg: n('weightKg', s.weightKg),
+      heightCm: n('heightCm', s.heightCm),
+      lthr: n('lthr', s.lthr),
+      maxHr: n('maxHr', s.maxHr),
+      hrFloors: [n('hr2', s.hrFloors[0]), n('hr3', s.hrFloors[1]), n('hr4', s.hrFloors[2]), n('hr5', s.hrFloors[3])],
       maintenanceKcal: n('maintenanceKcal', s.maintenanceKcal),
       deficitKcal: n('deficitKcal', s.deficitKcal),
       proteinG: n('proteinG', s.proteinG),
@@ -300,11 +339,53 @@ export default function SettingsScreen() {
               </View>
             </Card>
 
-            <Card title="Athlet">
+            <Card title="Profil & Zonen">
               <View style={styles.grid}>
                 {field('ftp', 'FTP', 'W')}
                 {field('weightKg', 'Gewicht', 'kg')}
+                {field('heightCm', 'Größe', 'cm')}
+                {field('lthr', 'Schwellenpuls (LTHR)', 'bpm')}
+                {field('maxHr', 'HFmax', 'bpm')}
               </View>
+              <ThemedText type="small" themeColor="textSecondary">
+                {(() => {
+                  const ftpV = parseNum(num.ftp ?? '') ?? s.ftp;
+                  const kg = parseNum(num.weightKg ?? '') ?? s.weightKg;
+                  return `${(ftpV / kg).toFixed(2)} W/kg · Ziel 4,0 W/kg = ${Math.round(4 * kg)} W`;
+                })()}
+              </ThemedText>
+
+              <ThemedText type="smallBold" themeColor="textSecondary" style={{ marginTop: 6 }}>
+                LEISTUNGSZONEN (aus FTP)
+              </ThemedText>
+              {powerZones(parseNum(num.ftp ?? '') ?? s.ftp).map((z) => (
+                <View key={z.name} style={styles.zoneRow}>
+                  <ThemedText type="small">{z.name}</ThemedText>
+                  <ThemedText type="small">{fmtZone(z, 'W')}</ThemedText>
+                </View>
+              ))}
+
+              <ThemedText type="smallBold" themeColor="textSecondary" style={{ marginTop: 6 }}>
+                HF-ZONEN (Untergrenzen Z2–Z5)
+              </ThemedText>
+              <View style={styles.grid}>
+                {field('hr2', 'Z2 ab', 'bpm')}
+                {field('hr3', 'Z3 ab', 'bpm')}
+                {field('hr4', 'Z4 ab', 'bpm')}
+                {field('hr5', 'Z5 ab', 'bpm')}
+              </View>
+              {hrZonesFromFloors(['hr2', 'hr3', 'hr4', 'hr5'].map((k, i) => parseNum(num[k] ?? '') ?? s.hrFloors[i])).map((z) => (
+                <View key={z.name} style={styles.zoneRow}>
+                  <ThemedText type="small">{z.name}</ThemedText>
+                  <ThemedText type="small">{fmtZone(z, 'bpm')}</ThemedText>
+                </View>
+              ))}
+
+              {profileInfo ? <ThemedText type="small">{profileInfo}</ThemedText> : null}
+              {hasKey ? <Button title="Aus Garmin übernehmen" variant="secondary" onPress={() => void pullGarminProfile()} /> : null}
+              <ThemedText type="small" themeColor="textSecondary">
+                Startwerte: Zonen und FTP aus deinem Strava-Profil (HF manuell gesetzt, FTP 289 W).
+              </ThemedText>
             </Card>
 
             <Card title="Ernährung">
@@ -416,6 +497,7 @@ const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
   supp: { gap: Spacing.two, paddingBottom: Spacing.three, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: '#8884' },
   suppFoot: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+  zoneRow: { flexDirection: 'row', justifyContent: 'space-between' },
   keyInput: { borderRadius: 10, paddingHorizontal: Spacing.three, paddingVertical: 12, fontSize: 16 },
   rule: { paddingVertical: 12, paddingHorizontal: Spacing.three, borderRadius: 10, backgroundColor: '#8882' },
 });

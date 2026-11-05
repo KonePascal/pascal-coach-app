@@ -2,6 +2,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 
 import type { GarminActivity } from '@/domain/garmin-parse';
 import type { LoadOverride, StoredActivity } from '@/domain/load';
+import type { LibraryItem, LoggedWorkout } from '@/domain/resolve';
 import { WEEK_TEMPLATE, type PlannedDay, type WeekPlan } from '@/domain/plan';
 import type { TpEvent } from '@/domain/trainingpeaks';
 import type { Supplement, SupplementRule } from '@/domain/supplements';
@@ -306,11 +307,46 @@ export async function setOverride(
   await db.runAsync('DELETE FROM daily_load WHERE planned_tss IS NULL AND actual_tss IS NULL');
 }
 
+// ---------- Workouts ----------
+
+export async function listLibrary(db: SQLiteDatabase): Promise<LibraryItem[]> {
+  return db.getAllAsync<LibraryItem>('SELECT id, name, xml FROM zwo_library ORDER BY name');
+}
+
+export async function addToLibrary(db: SQLiteDatabase, name: string, xml: string): Promise<void> {
+  // gleicher Name → ersetzen (neue Version der Datei)
+  await db.runAsync('DELETE FROM zwo_library WHERE name = ?', name);
+  await db.runAsync('INSERT INTO zwo_library (name, xml) VALUES (?, ?)', name, xml);
+}
+
+export async function removeFromLibrary(db: SQLiteDatabase, id: number): Promise<void> {
+  await db.runAsync('DELETE FROM zwo_library WHERE id = ?', id);
+}
+
+export async function logWorkout(db: SQLiteDatabase, w: LoggedWorkout & { source: string }): Promise<void> {
+  await db.runAsync(
+    'INSERT OR REPLACE INTO workout_log (date, day_type, name, source, xml) VALUES (?, ?, ?, ?, ?)',
+    w.date,
+    w.dayType,
+    w.name,
+    w.source,
+    w.xml,
+  );
+}
+
+export async function workoutHistory(db: SQLiteDatabase, limit = 60): Promise<LoggedWorkout[]> {
+  const rows = await db.getAllAsync<{ date: string; day_type: LoggedWorkout['dayType']; name: string; xml: string }>(
+    'SELECT date, day_type, name, xml FROM workout_log ORDER BY date DESC LIMIT ?',
+    limit,
+  );
+  return rows.map((r) => ({ date: r.date, dayType: r.day_type, name: r.name, xml: r.xml }));
+}
+
 // ---------- Backup ----------
 
 /** Kompletter Datenexport als JSON (für Backup / späteren Import). */
 export async function exportAll(db: SQLiteDatabase): Promise<string> {
-  const [settings, checkins, supplements, supplementLog, planDays, dailyLoad, garminActivities] = await Promise.all([
+  const [settings, checkins, supplements, supplementLog, planDays, dailyLoad, garminActivities, zwoLibrary] = await Promise.all([
     db.getAllAsync('SELECT * FROM settings'),
     db.getAllAsync('SELECT * FROM checkins ORDER BY date'),
     db.getAllAsync('SELECT * FROM supplements'),
@@ -318,6 +354,7 @@ export async function exportAll(db: SQLiteDatabase): Promise<string> {
     db.getAllAsync('SELECT * FROM plan_days ORDER BY weekday'),
     db.getAllAsync('SELECT * FROM daily_load ORDER BY date'),
     db.getAllAsync('SELECT * FROM garmin_activities ORDER BY date'),
+    db.getAllAsync('SELECT * FROM zwo_library ORDER BY name'),
   ]);
   return JSON.stringify(
     {
@@ -330,6 +367,7 @@ export async function exportAll(db: SQLiteDatabase): Promise<string> {
       planDays,
       dailyLoad,
       garminActivities,
+      zwoLibrary,
     },
     null,
     1,
